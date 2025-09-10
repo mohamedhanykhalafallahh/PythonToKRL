@@ -52,6 +52,10 @@ def validate_coordinates(x, y, z, a, b, c):
 def generate_krl_code(points, motion_commands, points_circ, orientations):
     krl_code = ""
 
+    # Guard against empty input
+    if not points:
+        return krl_code
+
     # Handle the origin point separately
     origin_point = points[0]
     krl_code += f"PTP {{X {origin_point[0]}, Y {origin_point[1]}, Z {origin_point[2]}, A {orientations[0][0]}, B {orientations[0][1]}, C {orientations[0][2]}, S 2., T 43.}}\n"
@@ -66,9 +70,10 @@ def generate_krl_code(points, motion_commands, points_circ, orientations):
             i += 1
             n += 1
         elif k == "CIRC":
-            krl_code += f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {orientations[n][0]}, B {orientations[n][1]}, C {orientations[n][2]}}}\n"
+            # Use orientation of the CIRC end point. Orientations list currently stores two entries per CIRC.
+            krl_code += f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {orientations[n + 1][0]}, B {orientations[n + 1][1]}, C {orientations[n + 1][2]}}}\n"
             j += 2
-            n += 1
+            n += 2
 
     return krl_code
 
@@ -96,20 +101,20 @@ def update_scroll_region():
         canvas.config(scrollregion=bbox)
 
 def draw_point(x, y, color="red"):
-    # Apply scaling factor to the coordinates
+    # Apply scaling factor to the coordinates (invert Y for canvas)
     scaled_x = x * scaling_factor
-    scaled_y = y * scaling_factor
+    scaled_y = -y * scaling_factor
     
     # Draw a point on the canvas
     canvas.create_oval(scaled_x - 2, scaled_y - 2, scaled_x + 2, scaled_y + 2, fill=color)
     update_scroll_region()
 
 def draw_line(x1, y1, x2, y2, motion_command):
-    # Apply scaling factor to the coordinates
+    # Apply scaling factor to the coordinates (invert Y for canvas)
     scaled_x1 = x1 * scaling_factor
-    scaled_y1 = y1 * scaling_factor
+    scaled_y1 = -y1 * scaling_factor
     scaled_x2 = x2 * scaling_factor
-    scaled_y2 = y2 * scaling_factor
+    scaled_y2 = -y2 * scaling_factor
     
     # Draw a line between two points on the canvas
     canvas.create_line(scaled_x1, scaled_y1, scaled_x2, scaled_y2, fill="blue")
@@ -149,16 +154,23 @@ def visualize_cuboid():
 
 def add_point():
     global points, circ_executed, motion_commands
-    x = float(x_entry.get())
-    y = float(y_entry.get())
-    z = float(z_entry.get())
-    a = float(a_entry.get())
-    b = float(b_entry.get())
-    c = float(c_entry.get())
+    x_str = x_entry.get()
+    y_str = y_entry.get()
+    z_str = z_entry.get()
+    a_str = a_entry.get()
+    b_str = b_entry.get()
+    c_str = c_entry.get()
 
-    if not validate_coordinates(x, y, z, a , b, c):
+    if not validate_coordinates(x_str, y_str, z_str, a_str , b_str, c_str):
         messagebox.showwarning("Invalid Input", "Please enter valid numerical values for X, Y, and Z coordinates or A, B, and C orientations.")
         return
+
+    x = float(x_str)
+    y = float(y_str)
+    z = float(z_str)
+    a = float(a_str)
+    b = float(b_str)
+    c = float(c_str)
 
     if len(points) > 0:
        motion_commands.append("LIN")
@@ -326,7 +338,7 @@ def automate():
     a = float(a_entry.get())
     b = float(b_entry.get())
     c = float(c_entry.get())
-
+    
     # Check for input errors
     if not e or not w or not turns or not layers:
         messagebox.showerror("Input Error", "Please fill in all the required fields in Automation Options.")
@@ -337,158 +349,166 @@ def automate():
     w = float(w)
     turns = int(turns)
     layers = int(layers)
-    e = -e  # Ensure filament thickness is negative for offset
+    e = -e
 
     print("Automate action executed with values:")
     print(f"E: {e}, W: {w}, Turns: {turns}, Layers: {layers}")
 
-    # Save initial copies
-    points_initiale = copy.deepcopy(points)
-    points_circular_initiale = copy.deepcopy(points_circ)
+    # Calculate value for Dummy CIRC before OG point
     dummy_circ_y = ((points[1][1] + points_circ[1][1]) / 2) - (1.4 * e)
     dummy_circ_x = ((points[0][0] + points[4][0]) / 2) - e
+    
+    x = points[0][0]
+    y = points[0][1]
+    points_initiale = copy.deepcopy(points)
+    points_circular_initiale = copy.deepcopy(points_circ)
     dummy_x_reset = copy.deepcopy(dummy_circ_x)
     dummy_y_reset = copy.deepcopy(dummy_circ_y)
-
-    for layer in range(layers + 1):  # Includes final layer
+    
+    for layer in range(layers + 1):  # Ensure it includes the final layer
         print(f"layer: {layer}")
-
         m = 1
         n = 0
-
-        # Reset base points and circ-points for each layer
+        
         points = copy.deepcopy(points_initiale)
         points_circ = copy.deepcopy(points_circular_initiale)
         dummy_circ_x = copy.deepcopy(dummy_x_reset)
         dummy_circ_y = copy.deepcopy(dummy_y_reset)
 
-        # Apply Z offset
-        for idx in range(len(points)):
-            points[idx][2] += w * layer
-        for idx in range(len(points_circ)):
-            points_circ[idx][2] += w * layer
+        if layer > 0:
+            for k in motion_commands:
+                if k == "LIN":
+                    points[m][2] += w * layer
+                    m += 1
+                elif k == "CIRC":
+                    points_circ[n][2] += w * layer
+                    points_circ[n + 1][2] += w * layer
+                    n += 2
+
+        if layer > 0:
+            points[0][2] += w * layer
 
         layer_output_lines = []
 
         for turn in range(turns + 1):
+            print(f"turn: {turn}")
             i = 1
             j = 0
 
             if turn == 0:
-                # Start point
-                layer_output_lines.append(
-                    "PTP {X " + str(points[0][0]) +
-                    ", Y " + str(points[0][1]) +
-                    ", Z " + str(points[0][2]) +
-                    ", A " + str(a) +
-                    ", B " + str(b) +
-                    ", C " + str(c) +
-                    ", S 2., T 43.}"
-                )
+                layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}")
 
-            for k in motion_commands:
-                if k == "LIN":
-                    line = (
-                        "LIN {X " + str(points[i][0]) +
-                        ", Y " + str(points[i][1]) +
-                        ", Z " + str(points[i][2]) +
-                        ", A " + str(a) +
-                        ", B " + str(b) +
-                        ", C " + str(c) + "}"
-                    )
-                    layer_output_lines.append(line)
-                    i += 1
-                elif k == "CIRC":
-                    line = (
-                        "CIRC {X " + str(points_circ[j][0]) +
-                        ", Y " + str(points_circ[j][1]) +
-                        ", Z " + str(points_circ[j][2]) + "}," +
-                        "{X " + str(points_circ[j + 1][0]) +
-                        ", Y " + str(points_circ[j + 1][1]) +
-                        ", Z " + str(points_circ[j + 1][2]) +
-                        ", A " + str(a) +
-                        ", B " + str(b) +
-                        ", C " + str(c) + "}"
-                    )
-                    layer_output_lines.append(line)
-                    j += 2
+            if turn > 0:
+                points[0][1] -= e
+                layer_output_lines.append(f"CIRC {{X {dummy_circ_x}, Y {dummy_circ_y}, Z {points[0][2]}}},{{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}}}")
 
-        # Reverse motion logic for even layers (custom sequence reconstruction)
-        if layer % 2 == 1:
-            print(f"Reconstructing reversed motion sequence for even layer {layer}")
-            reconstructed_lines = []
+            if turn > 0:
+                for k in motion_commands:
+                    if k == "LIN":
+                        if turn <= turns:
+                            if i == 1:
+                                points[i][1] -= e
+                            elif i == 2:
+                                points[i][0] += e
+                            elif i == 3:
+                                points[i][1] += e
+                            elif i == 4:
+                                points[i][0] -= e
+                                draw_point(dummy_circ_x, dummy_circ_y)
+                                draw_line(points[i][0], points[i][1], dummy_circ_x, dummy_circ_y, "CIRC")
+                                draw_line(dummy_circ_x, dummy_circ_y, points[0][0], points[0][1], "CIRC")
+                                dummy_circ_x -= (0.6 * e)
+                                dummy_circ_y -= (0.6 * e)
+                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            i += 1
+                        else:
+                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
 
+                    elif k == "CIRC":
+                        if turn <= turns:
+                            if j == 0:
+                                points_circ[j][0] += (e / 2)
+                                points_circ[j][1] -= (e / 2)
+                                points_circ[j + 1][0] += e
+                            elif j == 2:
+                                points_circ[j][0] += (e / 2)
+                                points_circ[j][1] += (e / 2)
+                                points_circ[j + 1][1] += e
+                            elif j == 4:
+                                points_circ[j][0] -= (e / 2)
+                                points_circ[j][1] += (e / 2)
+                                points_circ[j + 1][0] -= e
+                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            j += 2
+                        else:
+                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                visualize_cuboid()
+            elif turn == 0:
+                for k in motion_commands:
+                    if k == "LIN":
+                        if turn <= turns:
+                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            i += 1
+                        else:
+                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+
+                    elif k == "CIRC":
+                        if turn <= turns:
+                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            j += 2
+                        else:
+                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                visualize_cuboid()
+
+        # Build reversed sequence for odd layers if checkbox is enabled
+        if layer % 2 == 1 and alternate_layer_direction_var.get():
             motion_lines = [line for line in layer_output_lines if line.startswith(("LIN", "CIRC"))]
-
+            reconstructed_lines = []
             circ_blocks = []
-            circ_to_prev_lin = []  # Pair of (CIRC, its previous LIN)
-
+            circ_to_prev_lin = []
             lin_lines = [line for line in motion_lines if line.startswith("LIN")]
-            motion_lines_per_turn = 11  # Keep consistent with full automate logic
 
             prev_lin = None
             for line in motion_lines:
                 if line.startswith("LIN"):
-                    prev_lin = line  # remember last LIN
+                    prev_lin = line
                 elif line.startswith("CIRC"):
                     circ_blocks.append(line)
                     circ_to_prev_lin.append((line, prev_lin))
 
-            if circ_blocks and circ_to_prev_lin and lin_lines:
-                # ✅ PTP: Use LAST LIN (true end point of full forward motion)
+            if lin_lines:
                 last_lin_coords = lin_lines[-1][4:].strip()
-                ptp_command = "PTP " + last_lin_coords[:-1] + ", S 2., T 43.}"
-                reconstructed_lines.append(ptp_command)
+                reconstructed_lines.append("PTP " + last_lin_coords[:-1] + ", S 2., T 43.}")
 
-                # Initial LIN using end of last CIRC
+            if circ_blocks:
                 last_circ = circ_blocks[-1]
                 circ_parts = last_circ[5:].split("},{")
                 if len(circ_parts) == 2:
                     circ_end = circ_parts[1].strip()
                     reconstructed_lines.append(f"LIN {{{circ_end}}}")
 
-                # Reverse pairs and reconstruct per turn
-                reversed_pairs = list(reversed(circ_to_prev_lin))
+            reversed_pairs = list(reversed(circ_to_prev_lin))
+            for idx, (circ, lin_before) in enumerate(reversed_pairs):
+                circ_parts = circ[5:].split("},{")
+                if len(circ_parts) == 2 and lin_before is not None:
+                    intermediate = circ_parts[0].strip().strip("{}")
+                    lin_coords = lin_before[4:].strip().strip("{}")
+                    reconstructed_lines.append(f"CIRC {{{intermediate}}},{{{lin_coords}}}")
+                    if idx + 1 < len(reversed_pairs):
+                        next_circ = reversed_pairs[idx + 1][0]
+                        next_circ_parts = next_circ[5:].split("},{")
+                        if len(next_circ_parts) == 2:
+                            next_end = next_circ_parts[1].strip().strip("{}")
+                            reconstructed_lines.append(f"LIN {{{next_end}}}")
+                    else:
+                        if lin_lines:
+                            first_lin_point = lin_lines[0][4:].strip().strip("{}")
+                            reconstructed_lines.append(f"LIN {{{first_lin_point}}}")
 
-                # Chunk reversed_pairs into turns
-                for turn_start in range(0, len(reversed_pairs), 5):  # 5 CIRCs per turn
-                    turn_pairs = reversed_pairs[turn_start:turn_start + 5]
-                    for i, (circ, lin_before) in enumerate(turn_pairs):
-                        circ_parts = circ[5:].split("},{")
-                        if len(circ_parts) == 2:
-                            intermediate = circ_parts[0].strip().strip("{}")
-                            lin_coords = lin_before[4:].strip().strip("{}")
-                            reconstructed_lines.append(f"CIRC {{{intermediate}}},{{{lin_coords}}}")
-                            if i + 1 < len(turn_pairs):
-                                next_circ = turn_pairs[i + 1][0]
-                                next_circ_parts = next_circ[5:].split("},{")
-                                if len(next_circ_parts) == 2:
-                                    next_end = next_circ_parts[1].strip().strip("{}")
-                                    reconstructed_lines.append(f"LIN {{{next_end}}}")
-                            else:
-                                reconstructed_lines.append(f"LIN {{{lin_coords}}}")
-
-                    # ✅ Add missing final LIN of turn (first LIN of corresponding forward turn)
-                    # Get the turn index in forward motion
-                    turn_index = turn_start // 5
-                    fwd_turn_start = turn_index * motion_lines_per_turn
-                    if fwd_turn_start < len(motion_lines):
-                        # Search for the first LIN in that turn
-                        for k in range(fwd_turn_start, fwd_turn_start + motion_lines_per_turn):
-                            if k < len(motion_lines) and motion_lines[k].startswith("LIN"):
-                                lin_point = motion_lines[k][4:].strip().strip("{}")
-                                reconstructed_lines.append(f"LIN {{{lin_point}}}")
-                                break
-
-            # Replace the original layer output
             layer_output_lines = reconstructed_lines
 
-
-        # Output to text box
         for line in layer_output_lines:
             output_text.insert(tk.END, line + "\n")
-
-        visualize_cuboid()
 
 
     
@@ -533,47 +553,26 @@ def change_center():
     def ok_click():
         global xc, yc, zc
         # Get the input values
-        xc = xc_entry.get()
-        yc = yc_entry.get()
-        zc = zc_entry.get()
+        xc_str = xc_entry.get()
+        yc_str = yc_entry.get()
+        zc_str = zc_entry.get()
         # Validate the input
-        if xc and yc and zc:
+        if xc_str and yc_str and zc_str:
             try:
                 # Convert input values to floats
-                xc = float(xc)
-                yc = float(yc)
-                zc = float(zc)
+                xc = float(xc_str)
+                yc = float(yc_str)
+                zc = float(zc_str)
 
-                m = 0
-                n = 0
+                # Offset all base points once
+                for idx in range(len(points)):
+                    px, py, pz = points[idx]
+                    points[idx] = (px + xc, py + yc, pz + zc)
 
-                for k in motion_commands:
-                    if k == "LIN":
-                        while m < len(points):
-                            # Convert tuple to list, modify, and convert back to tuple
-                            temp = list(points[m])
-                            temp[0] += xc
-                            temp[1] += yc
-                            temp[2] += zc
-                            points[m] = tuple(temp)
-                            m += 1
-
-                    elif k == "CIRC":
-                        while n < len(points_circ):
-                            # Convert tuple to list, modify, and convert back to tuple
-                            temp = list(points_circ[n])
-                            temp[0] += xc
-                            temp[1] += yc
-                            temp[2] += zc
-                            points_circ[n] = tuple(temp)
-
-                            temp = list(points_circ[n + 1])
-                            temp[0] += xc
-                            temp[1] += yc
-                            temp[2] += zc
-                            points_circ[n + 1] = tuple(temp)
-
-                            n += 2
+                # Offset all circ points once (pairs)
+                for idx in range(len(points_circ)):
+                    px, py, pz = points_circ[idx]
+                    points_circ[idx] = (px + xc, py + yc, pz + zc)
 
                 # Close the pop-up window
                 popup.destroy()
@@ -698,15 +697,28 @@ def read_points_from_file(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
 
-        # Parse the origin point (Point 1)
-        x, y, z, a, b, c = map(float, lines[0].strip().split())
+        # Parse the origin point (Point 1) from the first non-empty, non-comment line
+        origin_index = 0
+        while origin_index < len(lines):
+            first = lines[origin_index].strip()
+            if first and not first.startswith('#'):
+                break
+            origin_index += 1
+        if origin_index >= len(lines):
+            raise ValueError("File does not contain an origin line.")
+
+        x, y, z, a, b, c = map(float, lines[origin_index].strip().split())
         points.append((x, y, z))
         orientations.append((a, b, c))
 
-        line_index = 1
+        line_index = origin_index + 1
 
         while line_index < len(lines):
-            parts = lines[line_index].strip().split()
+            raw = lines[line_index].strip()
+            if not raw or raw.startswith('#'):
+                line_index += 1
+                continue
+            parts = raw.split()
             if len(parts) == 7 and parts[6] == "LIN":
                 # LIN command
                 x, y, z, a, b, c = map(float, parts[:6])
@@ -718,7 +730,7 @@ def read_points_from_file(file_path):
                 # CIRC command
                 x1, y1, z1, x2, y2, z2, a1, b1, c1 = map(float, parts[:9])
                 points_circ.extend([(x1, y1, z1), (x2, y2, z2)])
-                orientations.extend([(a1, b1, c1)])
+                orientations.extend([(a1, b1, c1), (a1, b1, c1)])
                 motion_commands.append("CIRC")
                 line_index += 1
             else:
@@ -886,74 +898,107 @@ def open_generate_popup():
             messagebox.showerror("Input Error", "Please enter valid numbers")
             return
 
+        # Derived constants
         Z = Zr + Th
         A, B, C = 180.0, 0.0, 180.0
 
-        # Compute all 11 logical points (X/Y only, Z constant)
-        pts = [
-            (Xr + L/2,      Yr + W/2),       # 1
-            (Xr - L/2,      Yr + W/2),       # 2
-            (Xr - L/2 - 10, Yr + W/2 - 2),   # 3
-            (Xr - L/2 - 20, Yr + W/2 - 10),  # 4
-            (Xr - L/2 - 20, Yr - W/2),       # 5
-            (Xr - L/2 - 10, Yr - W/2 - 2),   # 6
-            (Xr - L/2,      Yr - W/2 - 10),  # 7
-            (Xr + L/2,      Yr - W/2 - 10),  # 8
-            (Xr + L/2 + 10, Yr - W/2 - 2),   # 9
-            (Xr + L/2 + 20, Yr - W/2),       # 10
-            (Xr + L/2 + 20, Yr + W/2 - 10)   # 11
-        ]
+        # Corner rounding radius (variable): 15% of min(L,W), with limits
+        min_edge = max(min(L, W), 1.0)
+        r_base = 0.15 * min_edge
+        # Clamp radius to avoid self-intersection or vanishing arcs
+        r = max(2.0, min(r_base, min_edge / 3.0))
+
+        # Precompute rectangle edges and useful centers for arcs
+        top_y    = Yr + W/2
+        bottom_y = Yr - W/2
+        left_x  = Xr - L/2
+        right_x = Xr + L/2
+
+        # Key points along edges (approach points r from each true corner)
+        start_top_right = (right_x - r, top_y)           # 1
+        top_left_approach = (left_x + r, top_y)          # 2
+        left_top_approach = (left_x, top_y - r)         # 4 (end of first CIRC)
+        left_bottom_approach = (left_x, bottom_y + r)   # 5
+        bottom_left_approach = (left_x + r, bottom_y)   # 7 (end of second CIRC)
+        bottom_right_approach = (right_x - r, bottom_y) # 8
+        right_bottom_approach = (right_x, bottom_y + r)  # 10 (end of third CIRC)
+        right_top_approach = (right_x, top_y - r)        # 11
+
+        # Arc centers for 90° fillets
+        center_TL = (left_x + r, top_y - r)
+        center_BL = (left_x + r, bottom_y + r)
+        center_BR = (right_x - r, bottom_y + r)
+
+        # 45° midpoints on each arc (via points for CIRC)
+        inv_sqrt2 = 2 ** -0.5
+        mid_TL = (center_TL[0] - r*inv_sqrt2, center_TL[1] + r*inv_sqrt2)  # from top->left
+        mid_BL = (center_BL[0] - r*inv_sqrt2, center_BL[1] - r*inv_sqrt2)  # from left->bottom (corrected)
+        mid_BR = (center_BR[0] + r*inv_sqrt2, center_BR[1] - r*inv_sqrt2)  # from bottom->right
 
         # Clear all existing data before generating new
         clear_all()
 
-        # --- Append into your existing lists (LIN & CIRC same style as import) ---
+        # --- Build lists consistent with manual/import flows ---
         # PTP 1
-        points.append((pts[0][0], pts[0][1], Z))
+        points.append((start_top_right[0], start_top_right[1], Z))
         orientations.append((A, B, C))
-        output_text.insert(tk.END, f"PTP {{X {pts[0][0]}, Y {pts[0][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"PTP {{X {start_top_right[0]}, Y {start_top_right[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # LIN 2
-        points.append((pts[1][0], pts[1][1], Z))
+        # LIN 2 (top edge toward TL)
+        points.append((top_left_approach[0], top_left_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {pts[1][0]}, Y {pts[1][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"LIN {{X {top_left_approach[0]}, Y {top_left_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # CIRC 3–4
-        points_circ.extend([(pts[2][0], pts[2][1], Z), (pts[3][0], pts[3][1], Z)])
+        # CIRC 3–4 (round TL corner)
+        points_circ.extend([
+            (mid_TL[0], mid_TL[1], Z),
+            (left_top_approach[0], left_top_approach[1], Z)
+        ])
+        # Append two orientation entries for CIRC (middle and end)
+        orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {pts[2][0]}, Y {pts[2][1]}, Z {Z}}},{{X {pts[3][0]}, Y {pts[3][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"CIRC {{X {mid_TL[0]}, Y {mid_TL[1]}, Z {Z}}},{{X {left_top_approach[0]}, Y {left_top_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # LIN 5
-        points.append((pts[4][0], pts[4][1], Z))
+        # LIN 5 (left edge toward BL)
+        points.append((left_bottom_approach[0], left_bottom_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {pts[4][0]}, Y {pts[4][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"LIN {{X {left_bottom_approach[0]}, Y {left_bottom_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # CIRC 6–7
-        points_circ.extend([(pts[5][0], pts[5][1], Z), (pts[6][0], pts[6][1], Z)])
+        # CIRC 6–7 (round BL corner)
+        points_circ.extend([
+            (mid_BL[0], mid_BL[1], Z),
+            (bottom_left_approach[0], bottom_left_approach[1], Z)
+        ])
+        orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {pts[5][0]}, Y {pts[5][1]}, Z {Z}}},{{X {pts[6][0]}, Y {pts[6][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"CIRC {{X {mid_BL[0]}, Y {mid_BL[1]}, Z {Z}}},{{X {bottom_left_approach[0]}, Y {bottom_left_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # LIN 8
-        points.append((pts[7][0], pts[7][1], Z))
+        # LIN 8 (bottom edge toward BR)
+        points.append((bottom_right_approach[0], bottom_right_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {pts[7][0]}, Y {pts[7][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"LIN {{X {bottom_right_approach[0]}, Y {bottom_right_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # CIRC 9–10
-        points_circ.extend([(pts[8][0], pts[8][1], Z), (pts[9][0], pts[9][1], Z)])
+        # CIRC 9–10 (round BR corner)
+        points_circ.extend([
+            (mid_BR[0], mid_BR[1], Z),
+            (right_bottom_approach[0], right_bottom_approach[1], Z)
+        ])
+        orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {pts[8][0]}, Y {pts[8][1]}, Z {Z}}},{{X {pts[9][0]}, Y {pts[9][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"CIRC {{X {mid_BR[0]}, Y {mid_BR[1]}, Z {Z}}},{{X {right_bottom_approach[0]}, Y {right_bottom_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
-        # LIN 11
-        points.append((pts[10][0], pts[10][1], Z))
+        # LIN 11 (right edge toward TR)
+        right_top = (right_top_approach[0], right_top_approach[1], Z)
+        points.append(right_top)
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {pts[10][0]}, Y {pts[10][1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"LIN {{X {right_top[0]}, Y {right_top[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
 
         popup.destroy()
         visualize_cuboid()
@@ -1008,7 +1053,7 @@ z_entry.grid(row=3, column=1)
 a_label = tk.Label(root, text="A:")
 a_label.grid(row=1, column=2)
 a_entry = tk.Entry(root)
-a_entry.insert(180, default_ori)
+a_entry.insert(0, default_ori)
 a_entry.grid(row=1, column=3)
 
 b_label = tk.Label(root, text="B:")
@@ -1020,7 +1065,7 @@ b_entry.grid(row=2, column=3)
 c_label = tk.Label(root, text="C:")
 c_label.grid(row=3, column=2)
 c_entry = tk.Entry(root)
-c_entry.insert(180, default_ori)
+c_entry.insert(0, default_ori)
 c_entry.grid(row=3, column=3)
 
 center_button = tk.Button(root, text="Change Center", command=change_center)
