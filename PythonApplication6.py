@@ -28,7 +28,7 @@ zc = 0
 
 # Canvas dimensions
 canvas_width = 400
-canvas_height = 420
+canvas_height = 320
 
 # Initial scaling factor
 scaling_factor = 3
