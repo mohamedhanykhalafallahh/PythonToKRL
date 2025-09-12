@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
+from tkinter import ttk
 import copy
 
 # Variables to store the points
@@ -27,7 +28,7 @@ zc = 0
 
 # Canvas dimensions
 canvas_width = 400
-canvas_height = 300
+canvas_height = 420
 
 # Initial scaling factor
 scaling_factor = 3
@@ -1016,10 +1017,20 @@ def pt_instructions():
 
 def import_instructions():
 
-    messagebox.showinfo("How to import external points?", "To import external points from an external file rather than inputing them 1 by 1 through the program, you will click on the 'Import Points' button and select a Text File (.txt) where all of your 11 points are saved.\n\nPlease follow the format in the example below in your text file to avoid any errors:\nFormat: {X Y Z A B C Motion_command}\n\n0.0 0.0 125.0 180.0 0.0 180.0\n50.0 0.0 125.0 180.0 0.0 180.0 LIN\n60.0 10.0 125.0 70.0 30.0 125.0 180.0 0.0 180.0 CIRC\n70.0 80.0 125.0 180.0 0.0 180.0 LIN\n60.0 100.0 125.0 50.0 110.0 125.0 180.0 0.0 180.0 CIRC\n0.0 110.0 125.0 180.0 0.0 180.0 LIN\n-10.0 100.0 125.0 -20.0 80.0 125.0 180.0 0.0 180.0 CIRC\n-20.0 30.0 125.0 180.0 0.0 180.0 LIN\n\nN.b: You can create your desired cuboid once through the program and then use the 'Save Points' button which saves the points with their orientations in a text file (.txt) with the desired format mentioned above.\n\nThis file can then be imported later to be used through the program.")
+    messagebox.showinfo("How to import external points?", "To import external points from an external file rather than inputing them 1 by 1 through the program, you will click on the 'Import Points' button and select a Text File (.txt) where all of your 11 points are saved.\n\nPlease follow the format in the example below in your text file to avoid any errors:\nFormat: {X Y Z A B C Motion_command}\n\n0.0 0.0 125.0 180.0 0.0 180.0\n50.0 0.0 125.0 180.0 0.0 180.0 LIN\n60.0 10.0 125.0 70.0 30.0 125.0 180.0 0.0 180.0 CIRC\n70.0 80.0 125.0 180.0 0.0 180.0 LIN\n60.0 100.0 125.0 50.0 110.0 125.0 180.0 0.0 180.0 CIRC\n0.0 110.0 125.0 180.0 0.0 180.0 LIN\n-10.0 100.0 125.0 -20.0 80.0 125.0 180.0 0.0 180.0 CIRC\n-20.0 30.0 125.0 180.0 0.0 180.0 LIN\n\nN.b: You can create your desired cuboid once through the program and then use the 'Save Points' button which saves the 11 points with their orientations in a text file (.txt) with the desired format mentioned above.\n\nThis file can then be imported later to be used through the program.")
 
 root = tk.Tk()
 root.title("Cuboidal KRL Code Generator")
+
+# Top-level notebook with Main and Help tabs
+root.grid_rowconfigure(0, weight=1)
+root.grid_columnconfigure(0, weight=1)
+top_notebook = ttk.Notebook(root)
+main_tab = ttk.Frame(top_notebook)
+help_tab = ttk.Frame(top_notebook)
+top_notebook.add(main_tab, text="Main")
+top_notebook.add(help_tab, text="Help")
+top_notebook.grid(row=0, column=0, sticky="nsew")
 
 # Default values
 default_x = 745
@@ -1028,155 +1039,192 @@ default_increment = 0
 default_ori = 180
 tool_z = 125
 
-input_label = tk.Label(root, text="Enter 11 points (Maximum) to form a cuboid:")
+input_label = tk.Label(main_tab, text="Enter 11 points (Maximum) to form a cuboid:")
 input_label.grid(row=0, column=0, columnspan=4)
 
 # Input fields for X, Y, Z coordinates & A, B , C orientations
-x_label = tk.Label(root, text="X:")
+x_label = tk.Label(main_tab, text="X:")
 x_label.grid(row=1, column=0)
-x_entry = tk.Entry(root)
+x_entry = tk.Entry(main_tab)
 x_entry.insert(0, default_x)
 x_entry.grid(row=1, column=1)
 
-y_label = tk.Label(root, text="Y:")
+y_label = tk.Label(main_tab, text="Y:")
 y_label.grid(row=2, column=0)
-y_entry = tk.Entry(root)
+y_entry = tk.Entry(main_tab)
 y_entry.insert(0, default_y)
 y_entry.grid(row=2, column=1)
 
-z_label = tk.Label(root, text="Z:")
+z_label = tk.Label(main_tab, text="Z:")
 z_label.grid(row=3, column=0)
-z_entry = tk.Entry(root)
+z_entry = tk.Entry(main_tab)
 z_entry.insert(0, tool_z)
 z_entry.grid(row=3, column=1)
 
-a_label = tk.Label(root, text="A:")
+a_label = tk.Label(main_tab, text="A:")
 a_label.grid(row=1, column=2)
-a_entry = tk.Entry(root)
+a_entry = tk.Entry(main_tab)
 a_entry.insert(0, default_ori)
 a_entry.grid(row=1, column=3)
 
-b_label = tk.Label(root, text="B:")
+b_label = tk.Label(main_tab, text="B:")
 b_label.grid(row=2, column=2)
-b_entry = tk.Entry(root)
+b_entry = tk.Entry(main_tab)
 b_entry.insert(0, default_increment)
 b_entry.grid(row=2, column=3)
 
-c_label = tk.Label(root, text="C:")
+c_label = tk.Label(main_tab, text="C:")
 c_label.grid(row=3, column=2)
-c_entry = tk.Entry(root)
+c_entry = tk.Entry(main_tab)
 c_entry.insert(0, default_ori)
 c_entry.grid(row=3, column=3)
 
-center_button = tk.Button(root, text="Change Center", command=change_center)
-center_button.grid(row=8, column=4)
+# Styled Functions dropdown (ttk menubutton + configured menu)
+functions_style = ttk.Style()
+functions_style.configure("Functions.TMenubutton", padding=(10, 6), relief="raised", borderwidth=1)
+try:
+    functions_style.configure("Functions.TMenubutton", background="#f7f7f7")
+    functions_style.map(
+        "Functions.TMenubutton",
+        background=[('active', '#e6f2ff'), ('pressed', '#d9eaff'), ('!active', '#f7f7f7')],
+        relief=[('pressed', 'sunken'), ('!pressed', 'raised')]
+    )
+except Exception:
+    pass
 
-Instructions_button = tk.Button(root, text="General Instructions", command=instructions)
-Instructions_button.grid(row=6, column=4)
+alternate_layer_direction_var = tk.BooleanVar(value=True)
 
-pt_instr_button = tk.Button(root, text="Points Order Instructions", command=pt_instructions)
-pt_instr_button.grid(row=7, column=4, pady=10)
+functions_mbtn = ttk.Menubutton(main_tab, text="Functions", style="Functions.TMenubutton")
+functions_menu = tk.Menu(functions_mbtn, tearoff=False)
 
-im_instr_button = tk.Button(root, text="Import/Save Instructions", command=import_instructions)
-im_instr_button.grid(row=11, column=4)
+# Menu aesthetics (font, colors, border)
+try:
+    functions_menu.configure(font=("Segoe UI", 10), background="#ffffff", foreground="#000000",
+                             activebackground="#e6f2ff", activeforeground="#000000", borderwidth=1, relief="solid")
+except Exception:
+    pass
 
-motion_label = tk.Label(root, text="_____________________________________________________________________________________________________________")
+functions_menu.add_checkbutton(label="Alternate Layer Direction in Automation", onvalue=True, offvalue=False,
+                               variable=alternate_layer_direction_var)
+functions_menu.add_separator()
+functions_menu.add_command(label="Add Approach\t (Ctrl+Shift+A)", command=open_approach_popup)
+functions_menu.add_separator()
+functions_menu.add_command(label="Change Center\t (Ctrl+Shift+C)", command=change_center)
+functions_menu.add_separator()
+functions_menu.add_command(label="Auto‑Generate Base\t (Ctrl+Shift+G)", command=open_generate_popup)
+
+functions_mbtn.configure(menu=functions_menu)
+functions_mbtn.grid(row=8, column=4, padx=10, pady=8, sticky="ew")
+
+# Keyboard shortcuts (accelerators shown in menu)
+root.bind_all("<Control-Shift-A>", lambda e: open_approach_popup())
+root.bind_all("<Control-Shift-C>", lambda e: change_center())
+root.bind_all("<Control-Shift-G>", lambda e: open_generate_popup())
+
+## Remove inline help notebook; we will use top-level Help tab
+
+motion_label = tk.Label(main_tab, text="_____________________________________________________________________________________________________________")
 motion_label.grid(row=4, column=0, columnspan=4)
 
 # Label specifying the default motion command
-motion_label = tk.Label(root, text="Automation Options")
+motion_label = tk.Label(main_tab, text="Automation Options")
 motion_label.grid(row=5, column=0, columnspan=4)
 
 # Add entry fields and buttons to the GUI
 
-E_label = tk.Label(root, text="Filament Thickness (E):")
+E_label = tk.Label(main_tab, text="Filament Thickness (E):")
 E_label.grid(row=6, column=0)
-E_entry = tk.Entry(root)
+E_entry = tk.Entry(main_tab)
 E_entry.grid(row=6, column=1)
 
-W_label = tk.Label(root, text="Filament Width (W):")
+W_label = tk.Label(main_tab, text="Filament Width (W):")
 W_label.grid(row=6, column=2)
-W_entry = tk.Entry(root)
+W_entry = tk.Entry(main_tab)
 W_entry.grid(row=6, column=3)
 
-NumberofTurns_label = tk.Label(root, text="Number of Turns:")
+NumberofTurns_label = tk.Label(main_tab, text="Number of Turns:")
 NumberofTurns_label.grid(row=7, column=0)
-NumberofTurns_entry = tk.Entry(root)
+NumberofTurns_entry = tk.Entry(main_tab)
 NumberofTurns_entry.grid(row=7, column=1)
 
-NumberofLayers_label = tk.Label(root, text="Number of Layers:")
+NumberofLayers_label = tk.Label(main_tab, text="Number of Layers:")
 NumberofLayers_label.grid(row=7, column=2)
-NumberofLayers_entry = tk.Entry(root)
+NumberofLayers_entry = tk.Entry(main_tab)
 NumberofLayers_entry.grid(row=7, column=3)
 
-add_button = tk.Button(root, text="Add Point", command=add_point)
+add_button = tk.Button(main_tab, text="Add Point", command=add_point)
 add_button.grid(row=8, column=0, sticky="ew", padx=30, pady=20)
 
-circ_button = tk.Button(root, text="CIRC", command=lambda: select_motion_command("CIRC"))
+circ_button = tk.Button(main_tab, text="CIRC", command=lambda: select_motion_command("CIRC"))
 circ_button.grid(row=8, column=1, sticky="ew", padx=30, pady=20)
 
-clear_button = tk.Button(root, text="Clear All", command=clear_all)
+clear_button = tk.Button(main_tab, text="Clear All", command=clear_all)
 clear_button.grid(row=8, column=2, sticky="ew", padx=30, pady=20)
 
-auto_button = tk.Button(root, text="Automate", command=automate)
+auto_button = tk.Button(main_tab, text="Automate", command=automate)
 auto_button.grid(row=8, column=3, sticky="ew", padx=30, pady=20)
 
-output_text = tk.Text(root, height=10, width=80)
+output_text = tk.Text(main_tab, height=10, width=80)
 output_text.grid(row=9, column=0, columnspan=4, padx=20)
 
-export_button = tk.Button(root, text="Export KRL Code", command=save_krl_code)
+export_button = tk.Button(main_tab, text="Export KRL Code", command=save_krl_code)
 export_button.grid(row=11, column=0, columnspan=4, pady=10)
 
-import_button = tk.Button(root, text="Import Points", command=import_points)
+import_button = tk.Button(main_tab, text="Import Points", command=import_points)
 import_button.grid(row=10, column=4)
 
-save_button = tk.Button(root, text="Save Points", command=save_points)
+save_button = tk.Button(main_tab, text="Save Points", command=save_points)
 save_button.grid(row=9, column=4, pady=10)
 
 # Create a button to open the commentary popup
-commentary_button = tk.Button(root, text="Add Commentary", command=open_commentary_popup)
+commentary_button = tk.Button(main_tab, text="Add Commentary", command=open_commentary_popup)
 commentary_button.grid(row=10, column=3, pady=10)
 
-# Create a button to open the approach popup
-approach_button = tk.Button(root, text="Add Approach", command=open_approach_popup)
-approach_button.grid(row=11, column=3, pady=10)
+# Removed standalone Add Approach button (moved into Functions menu)
 
 # Create a variable to store the selected file format
 file_format_var = tk.StringVar(value="KRL (.src)")
 
 # Radio buttons for selecting file format
-src_radio = tk.Radiobutton(root, text="KRL (.src)", variable=file_format_var, value="KRL (.src)")
+src_radio = tk.Radiobutton(main_tab, text="KRL (.src)", variable=file_format_var, value="KRL (.src)")
 src_radio.grid(row=10, column=1, sticky="w")
 
-txt_radio = tk.Radiobutton(root, text="Text (.txt)", variable=file_format_var, value="Text (.txt)")
+txt_radio = tk.Radiobutton(main_tab, text="Text (.txt)", variable=file_format_var, value="Text (.txt)")
 txt_radio.grid(row=10, column=2, sticky="w")
 
-canvas_label = tk.Label(root, text="Canvas For Visual Representation")
+canvas_label = tk.Label(main_tab, text="Canvas For Visual Representation")
 canvas_label.grid(row=0, column=4, columnspan=4)
 
-canvas = tk.Canvas(root, width=canvas_width, height=canvas_height, bg="white")
+canvas = tk.Canvas(main_tab, width=canvas_width, height=canvas_height, bg="white")
 canvas.grid(row=1, rowspan=3, column=4, padx=10, pady=10)
 
 # Add a vertical scrollbar
-v_scrollbar = tk.Scrollbar(root, orient=tk.VERTICAL, command=canvas.yview)
+v_scrollbar = tk.Scrollbar(main_tab, orient=tk.VERTICAL, command=canvas.yview)
 v_scrollbar.grid(row=1, rowspan=3, column=5, sticky='ns')
 
 # Add a horizontal scrollbar
-h_scrollbar = tk.Scrollbar(root, orient=tk.HORIZONTAL, command=canvas.xview)
+h_scrollbar = tk.Scrollbar(main_tab, orient=tk.HORIZONTAL, command=canvas.xview)
 h_scrollbar.grid(row=4, column=4, sticky='ew')
 
 # Configure the canvas to use the scrollbars
 canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
-# Add a Alternate layers checkbox
-alternate_layer_direction_var = tk.BooleanVar(value=True)
+# Removed standalone Alternate Layer Direction checkbox (moved into Functions menu)
 
-alternate_checkbox = tk.Checkbutton(root, text="Alternate Layer Direction", variable=alternate_layer_direction_var)
-alternate_checkbox.grid(row=9, column=5, columnspan=2, padx=10, pady=5)
+# Removed standalone Auto‑Generate Base button (moved into Functions menu)
 
-# after you create your approach_button:
-generate_button = tk.Button(root, text="Auto‑Generate Base", command=open_generate_popup)
-generate_button.grid(row=8, column=5, padx=10, pady=20)
+# Populate the top-level Help tab with centered instruction buttons
+help_container = tk.Frame(help_tab)
+help_container.place(relx=0.5, rely=0.5, anchor='center')
+
+btn_general = tk.Button(help_container, text="General Instructions", command=instructions, width=56)
+btn_general.pack(fill='x', padx=20, pady=50)
+
+btn_points = tk.Button(help_container, text="Points Order Instructions", command=pt_instructions, width=56)
+btn_points.pack(fill='x', padx=20, pady=50)
+
+btn_import = tk.Button(help_container, text="Import/Save Instructions", command=import_instructions, width=56)
+btn_import.pack(fill='x', padx=20, pady=50)
 
 
 
