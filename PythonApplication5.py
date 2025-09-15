@@ -1,5 +1,8 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog, PhotoImage
+import os
+import sys
+import subprocess
 
 # Counter for numbering the KRL codes
 krl_counter = 1
@@ -450,14 +453,36 @@ def open_commentary_popup():
 root = tk.Tk()
 root.title("Dynamic KRL Code Generator")
 
+def go_back_to_selector():
+    try:
+        selector_script = os.path.join(os.path.dirname(__file__), 'Main_Window_Program_Selector_.py')
+        if os.path.exists(selector_script):
+            subprocess.Popen([sys.executable, selector_script])
+        else:
+            messagebox.showwarning("Not Found", "Main_Window_Program_Selector_.py was not found.")
+    except Exception as ex:
+        messagebox.showerror("Error", f"Failed to open selector: {ex}")
+    finally:
+        root.destroy()
+
 # Default values
 default_increment = 0
 default_ori = 180
 tool_z = 125
 
+# Back button at far left; title centered above inputs (columns 1–3)
+back_btn = tk.Button(root, text="← Back", command=go_back_to_selector)
+back_btn.grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+for col_idx in (1, 2, 3):
+    try:
+        root.grid_columnconfigure(col_idx, weight=1)
+    except Exception:
+        pass
+
 # Label specifying the input type
 input_label = tk.Label(root, text="Input your points (Only use for PTP and LIN)")
-input_label.grid(row=0, column=0, columnspan=4)
+input_label.grid(row=0, column=1, columnspan=3, sticky="n")
 
 # Input fields for X, Y, Z coordinates
 x_label = tk.Label(root, text="X:")

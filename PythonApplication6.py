@@ -2,6 +2,10 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from tkinter import ttk
 import copy
+import math
+import sys
+import os
+import subprocess
 
 # Variables to store the points
 points = []
@@ -35,6 +39,62 @@ scaling_factor = 3
 
 # Add a global variable to track if a CIRC command has been executed
 circ_executed = False
+
+# Undo history (bounded)
+UNDO_HISTORY_LIMIT = 10
+undo_history = []  # list of snapshots (bounded)
+redo_history = []  # list of redo snapshots (bounded)
+
+def _snapshot_state():
+    # Capture deep copies of mutable program state and current output text
+    return {
+        'points': copy.deepcopy(points),
+        'points_circ': copy.deepcopy(points_circ),
+        'motion_commands': copy.deepcopy(motion_commands),
+        'orientations': copy.deepcopy(orientations),
+        'krl_counter': krl_counter,
+        'output_text': output_text.get("1.0", tk.END)
+    }
+
+def _restore_state(snap):
+    global points, points_circ, motion_commands, orientations, krl_counter
+    points = copy.deepcopy(snap['points'])
+    points_circ = copy.deepcopy(snap['points_circ'])
+    motion_commands = copy.deepcopy(snap['motion_commands'])
+    orientations = copy.deepcopy(snap['orientations'])
+    krl_counter = snap['krl_counter']
+    canvas.delete("all")
+    output_text.delete("1.0", tk.END)
+    output_text.insert(tk.END, snap['output_text'])
+    visualize_cuboid()
+
+def _push_undo_snapshot():
+    # Keep last 3 states
+    if len(undo_history) >= UNDO_HISTORY_LIMIT:
+        undo_history.pop(0)
+    undo_history.append(_snapshot_state())
+    # Any new action invalidates redo history
+    redo_history.clear()
+
+def undo_action(event=None):
+    if undo_history:
+        current = _snapshot_state()
+        # Move current into redo
+        if len(redo_history) >= UNDO_HISTORY_LIMIT:
+            redo_history.pop(0)
+        redo_history.append(current)
+        snap = undo_history.pop()  # last snapshot
+        _restore_state(snap)
+
+def redo_action(event=None):
+    if redo_history:
+        current = _snapshot_state()
+        # Move current into undo
+        if len(undo_history) >= UNDO_HISTORY_LIMIT:
+            undo_history.pop(0)
+        undo_history.append(current)
+        snap = redo_history.pop()  # last redo snapshot
+        _restore_state(snap)
 
 
 def validate_coordinates(x, y, z, a, b, c):
@@ -155,6 +215,7 @@ def visualize_cuboid():
 
 def add_point():
     global points, circ_executed, motion_commands
+    # Take snapshot only if inputs are valid; will push after validation
     x_str = x_entry.get()
     y_str = y_entry.get()
     z_str = z_entry.get()
@@ -166,6 +227,8 @@ def add_point():
         messagebox.showwarning("Invalid Input", "Please enter valid numerical values for X, Y, and Z coordinates or A, B, and C orientations.")
         return
 
+    # Snapshot before mutating state
+    _push_undo_snapshot()
     x = float(x_str)
     y = float(y_str)
     z = float(z_str)
@@ -265,6 +328,8 @@ def input_points_for_circ():
     # Function to handle the input
     def ok_click():
         global krl_counter
+        # Snapshot prior to applying changes
+        _push_undo_snapshot()
         # Get the input values
         middle_x = middle_x_entry.get()
         middle_y = middle_y_entry.get()
@@ -325,6 +390,7 @@ def format_point(pt):
 def automate():
     global points, points_circ, motion_commands
 
+    _push_undo_snapshot()
     clear_for_auto()
 
     # Ensure all points are lists
@@ -339,6 +405,12 @@ def automate():
     a = float(a_entry.get())
     b = float(b_entry.get())
     c = float(c_entry.get())
+    # Read tilt angle (fallback to 10 if invalid)
+    try:
+        tilt_angle_deg = float(tilt_entry.get())
+    except Exception:
+        tilt_angle_deg = 10.0
+    tilt_angle_deg = max(5.0, min(tilt_angle_deg, 20.0))
     
     # Check for input errors
     if not e or not w or not turns or not layers:
@@ -397,7 +469,11 @@ def automate():
             j = 0
 
             if turn == 0:
-                layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}")
+                if tilt_along_travel_var.get():
+                    # Use provided A/C for the first PTP, keep B tilted if user expects immediate tilt
+                    layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A 180.0, B {tilt_angle_deg}, C 180.0, S 2., T 43.}}")
+                else:
+                    layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}")
 
             if turn > 0:
                 points[0][1] -= e
@@ -420,10 +496,19 @@ def automate():
                                 draw_line(dummy_circ_x, dummy_circ_y, points[0][0], points[0][1], "CIRC")
                                 dummy_circ_x -= (0.6 * e)
                                 dummy_circ_y -= (0.6 * e)
-                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                # Heading from previous point to this point
+                                heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
                             i += 1
                         else:
-                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
 
                     elif k == "CIRC":
                         if turn <= turns:
@@ -439,26 +524,51 @@ def automate():
                                 points_circ[j][0] -= (e / 2)
                                 points_circ[j][1] += (e / 2)
                                 points_circ[j + 1][0] -= e
-                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                # Heading approximated from via->end for arc tangent
+                                heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                             j += 2
                         else:
-                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                 visualize_cuboid()
             elif turn == 0:
                 for k in motion_commands:
                     if k == "LIN":
                         if turn <= turns:
-                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
                             i += 1
                         else:
-                            layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
 
                     elif k == "CIRC":
                         if turn <= turns:
-                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                             j += 2
                         else:
-                            layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                            if tilt_along_travel_var.get():
+                                heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                            else:
+                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                 visualize_cuboid()
 
         # Build reversed sequence for odd layers if checkbox is enabled
@@ -485,7 +595,7 @@ def automate():
                 last_circ = circ_blocks[-1]
                 circ_parts = last_circ[5:].split("},{")
                 if len(circ_parts) == 2:
-                    circ_end = circ_parts[1].strip()
+                    circ_end = circ_parts[1].strip().strip("{}")
                     reconstructed_lines.append(f"LIN {{{circ_end}}}")
 
             reversed_pairs = list(reversed(circ_to_prev_lin))
@@ -515,12 +625,14 @@ def automate():
     
 def clear_for_auto():
     global krl_counter
+    _push_undo_snapshot()
     krl_counter = 1
     canvas.delete("all")
     output_text.delete("1.0", tk.END)
 
 def clear_all():
     global points, points_circ, motion_commands, krl_counter
+    _push_undo_snapshot()
     points = []
     points_circ = []
     motion_commands = []
@@ -553,6 +665,8 @@ def change_center():
     # Function to handle the input
     def ok_click():
         global xc, yc, zc
+        # Snapshot prior to applying changes
+        _push_undo_snapshot()
         # Get the input values
         xc_str = xc_entry.get()
         yc_str = yc_entry.get()
@@ -676,6 +790,7 @@ def import_points():
     file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
     if file_path:
         try:
+            _push_undo_snapshot()
             points_from_file, points_circ_from_file, orientations_from_file, motion_commands_from_file = read_points_from_file(file_path)
             # Update the global variables with the imported points
             global points, points_circ, orientations, motion_commands
@@ -889,6 +1004,7 @@ def open_generate_popup():
 
     def generate_points():
         try:
+            _push_undo_snapshot()
             Xr = float(xr_entry.get())
             Yr = float(yr_entry.get())
             Zr = float(zr_entry.get())
@@ -943,7 +1059,7 @@ def open_generate_popup():
         # PTP 1
         points.append((start_top_right[0], start_top_right[1], Z))
         orientations.append((A, B, C))
-        output_text.insert(tk.END, f"PTP {{X {start_top_right[0]}, Y {start_top_right[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        output_text.insert(tk.END, f"PTP {{X {start_top_right[0]}, Y {start_top_right[1]}, Z {Z}, A {A}, B {B}, C {C}, S 2., T 43.}}\n")
 
         # LIN 2 (top edge toward TL)
         points.append((top_left_approach[0], top_left_approach[1], Z))
@@ -1019,8 +1135,35 @@ def import_instructions():
 
     messagebox.showinfo("How to import external points?", "To import external points from an external file rather than inputing them 1 by 1 through the program, you will click on the 'Import Points' button and select a Text File (.txt) where all of your 11 points are saved.\n\nPlease follow the format in the example below in your text file to avoid any errors:\nFormat: {X Y Z A B C Motion_command}\n\n0.0 0.0 125.0 180.0 0.0 180.0\n50.0 0.0 125.0 180.0 0.0 180.0 LIN\n60.0 10.0 125.0 70.0 30.0 125.0 180.0 0.0 180.0 CIRC\n70.0 80.0 125.0 180.0 0.0 180.0 LIN\n60.0 100.0 125.0 50.0 110.0 125.0 180.0 0.0 180.0 CIRC\n0.0 110.0 125.0 180.0 0.0 180.0 LIN\n-10.0 100.0 125.0 -20.0 80.0 125.0 180.0 0.0 180.0 CIRC\n-20.0 30.0 125.0 180.0 0.0 180.0 LIN\n\nN.b: You can create your desired cuboid once through the program and then use the 'Save Points' button which saves the 11 points with their orientations in a text file (.txt) with the desired format mentioned above.\n\nThis file can then be imported later to be used through the program.")
 
+def automation_instructions():
+
+    messagebox.showinfo(
+        "How does Automation Functions work?",
+        "Options explained:\n\n"
+        "Auto-Alternate Layer Direction: When enabled, even-numbered layer's turns are automatically reversed in order to reduce travel and improve continuity.\n\n"
+        "Auto-Orient Along Travel: When enabled, orientations are set pen-like along motion. A=180°, B=tilt (deg), C=follows path heading. Tilt angle can be set near the Functions menu. Disable to use your own A/B/C.\n\n"
+        "Tips:\n\n"
+        "Use a small tilt (5–15°) to avoid wrist singularities.\n"
+        "Use a small E (filament thickness) to avoid over-extrusion.\n"
+        "Keep your base path consistent (LIN/CIRC order) for best automation results."
+    )
+
 root = tk.Tk()
 root.title("Cuboidal KRL Code Generator")
+
+def go_back_to_selector():
+    try:
+        # Attempt to open the main selector script in a new process
+        selector_script = os.path.join(os.path.dirname(__file__), 'Main_Window_Program_Selector_.py')
+        if os.path.exists(selector_script):
+            subprocess.Popen([sys.executable, selector_script])
+        else:
+            messagebox.showwarning("Not Found", "Main_Window_Program_Selector_.py was not found.")
+    except Exception as ex:
+        messagebox.showerror("Error", f"Failed to open selector: {ex}")
+    finally:
+        # Close current window
+        root.destroy()
 
 # Top-level notebook with Main and Help tabs
 root.grid_rowconfigure(0, weight=1)
@@ -1039,8 +1182,19 @@ default_increment = 0
 default_ori = 180
 tool_z = 125
 
+# Back button at far left; title centered above X/Y/Z/A/B/C (columns 0–3)
+back_btn = tk.Button(main_tab, text="← Back", command=go_back_to_selector)
+back_btn.grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+# Make columns 1–3 expand so the label centers over inputs
+for col_idx in (1, 2, 3):
+    try:
+        main_tab.grid_columnconfigure(col_idx, weight=1)
+    except Exception:
+        pass
+
 input_label = tk.Label(main_tab, text="Enter 11 points (Maximum) to form a cuboid:")
-input_label.grid(row=0, column=0, columnspan=4)
+input_label.grid(row=0, column=1, columnspan=3, sticky="n")
 
 # Input fields for X, Y, Z coordinates & A, B , C orientations
 x_label = tk.Label(main_tab, text="X:")
@@ -1093,6 +1247,8 @@ except Exception:
     pass
 
 alternate_layer_direction_var = tk.BooleanVar(value=True)
+tilt_along_travel_var = tk.BooleanVar(value=True)
+tilt_angle_var = tk.DoubleVar(value=10.0)
 
 functions_mbtn = ttk.Menubutton(main_tab, text="Functions", style="Functions.TMenubutton")
 functions_menu = tk.Menu(functions_mbtn, tearoff=False)
@@ -1104,8 +1260,11 @@ try:
 except Exception:
     pass
 
-functions_menu.add_checkbutton(label="Alternate Layer Direction in Automation", onvalue=True, offvalue=False,
+functions_menu.add_checkbutton(label="Auto-Alternate Layer Direction", onvalue=True, offvalue=False,
                                variable=alternate_layer_direction_var)
+functions_menu.add_separator()                               
+functions_menu.add_checkbutton(label="Auto-Orient Along Travel (B=Tilt Angle)", onvalue=True, offvalue=False,
+                               variable=tilt_along_travel_var)
 functions_menu.add_separator()
 functions_menu.add_command(label="Add Approach\t (Ctrl+Shift+A)", command=open_approach_popup)
 functions_menu.add_separator()
@@ -1115,6 +1274,12 @@ functions_menu.add_command(label="Auto‑Generate Base\t (Ctrl+Shift+G)", comman
 
 functions_mbtn.configure(menu=functions_menu)
 functions_mbtn.grid(row=8, column=4, padx=10, pady=8, sticky="ew")
+
+# Compact Undo/Redo icon buttons next to Functions
+undo_icon_btn = tk.Button(main_tab, text="↺", width=3, command=undo_action)
+undo_icon_btn.grid(row=8, column=5, padx=(0, 4), pady=8, sticky="w")
+redo_icon_btn = tk.Button(main_tab, text="↻", width=3, command=redo_action)
+redo_icon_btn.grid(row=8, column=6, padx=(0, 10), pady=8, sticky="w")
 
 # Keyboard shortcuts (accelerators shown in menu)
 root.bind_all("<Control-Shift-A>", lambda e: open_approach_popup())
@@ -1152,6 +1317,17 @@ NumberofLayers_label.grid(row=7, column=2)
 NumberofLayers_entry = tk.Entry(main_tab)
 NumberofLayers_entry.grid(row=7, column=3)
 
+# Simple Tilt controls (inline, lightweight)
+tilt_container = tk.Frame(main_tab)
+tilt_container.grid(row=6, column=4, columnspan=4, sticky="n", pady=(0, 0))
+tilt_frame = tk.Frame(tilt_container)
+tilt_frame.pack()
+tilt_label = tk.Label(tilt_frame, text="Tilt Angle (°) :")
+tilt_label.pack(side="left", padx=(0, 6))
+tilt_entry = tk.Entry(tilt_frame, width=6)
+tilt_entry.insert(0, "10")
+tilt_entry.pack(side="left")
+
 add_button = tk.Button(main_tab, text="Add Point", command=add_point)
 add_button.grid(row=8, column=0, sticky="ew", padx=30, pady=20)
 
@@ -1179,6 +1355,10 @@ save_button.grid(row=9, column=4, pady=10)
 # Create a button to open the commentary popup
 commentary_button = tk.Button(main_tab, text="Add Commentary", command=open_commentary_popup)
 commentary_button.grid(row=10, column=3, pady=10)
+
+# Keyboard shortcuts for undo/redo
+root.bind_all("<Control-z>", undo_action)
+root.bind_all("<Control-y>", redo_action)
 
 # Removed standalone Add Approach button (moved into Functions menu)
 
@@ -1226,6 +1406,9 @@ btn_points.pack(fill='x', padx=20, pady=50)
 btn_import = tk.Button(help_container, text="Import/Save Instructions", command=import_instructions, width=56)
 btn_import.pack(fill='x', padx=20, pady=50)
 
+btn_automation = tk.Button(help_container, text="Automation Functions Instructions", command=automation_instructions, width=56)
+btn_automation.pack(fill='x', padx=20, pady=50)
 
+## Tools tab content removed (Undo/Redo moved to Functions menu)
 
 root.mainloop()

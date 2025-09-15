@@ -16,12 +16,14 @@ def open_sub_program(program_type):
         if program_type == "Cuboid":
             script = resource_path("PythonApplication6.py")
             subprocess.Popen([sys.executable, script], shell=False)
+            root.destroy()
         elif program_type == "Cylindrical":
             messagebox.showinfo("Experimental Feature", "Cylindrical program is still experimental and in development.")
         elif program_type == "Free form":
             script = resource_path("PythonApplication5.py")
             if os.path.exists(script):
                 subprocess.Popen([sys.executable, script], shell=False)
+                root.destroy()
             else:
                 messagebox.showinfo("Unavailable", "Free form program is not available in this repository.")
         else:
