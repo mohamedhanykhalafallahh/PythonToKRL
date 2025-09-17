@@ -461,8 +461,68 @@ def automate():
         if layer > 0:
             points[0][2] += w * layer
 
-        layer_output_lines = []
+        # Add layer transition connection if this is not the first layer
+        if layer > 0 and alternate_layer_direction_var.get():
+            # We need to connect the end of the previous layer to the start of this layer
+            # The connection depends on whether this layer is normal or reversed
+            
+            if layer % 2 == 1:  # Odd layer - going from exterior to interior
+                # Previous layer (even) ended at the innermost point (Turn0 last point)
+                # This layer should start at the outermost point (Turn3 first point) at new height
+                # Need CIRC transition from inner to outer
+                
+                # Calculate the end point of previous layer (innermost)
+                inner_x = points[0][0]
+                inner_y = points[0][1]
+                inner_z = points[0][2] - w  # Previous layer height
+                
+                # Calculate the start point of this layer (outermost point, new height)
+                start_x = points[0][0] - (e * turns)
+                start_y = points[0][1] - (e * turns)
+                start_z = points[0][2]  # Current layer height
+                
+                # Calculate via point for smooth transition
+                via_x = (inner_x + start_x) / 2
+                via_y = (inner_y + start_y) / 2
+                via_z = (inner_z + start_z) / 2
+                
+                # Add transition CIRC command
+                if tilt_along_travel_var.get():
+                    heading_deg = math.degrees(math.atan2(start_y - via_y, start_x - via_x))
+                    output_text.insert(tk.END, f"CIRC {{X {via_x}, Y {via_y}, Z {via_z}}},{{X {start_x}, Y {start_y}, Z {start_z}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}\n")
+                else:
+                    output_text.insert(tk.END, f"CIRC {{X {via_x}, Y {via_y}, Z {via_z}}},{{X {start_x}, Y {start_y}, Z {start_z}, A {a}, B {b}, C {c}}}\n")
+                    
+            else:  # Even layer - going from interior to exterior  
+                # Previous layer (odd) ended at the outermost point (Turn3 last point)
+                # This layer should start at the innermost point (Turn0 first point) at new height
+                # Need CIRC transition from outer to inner
+                
+                # Calculate the end point of previous layer (outermost)
+                outer_x = points[0][0] - (e * turns)
+                outer_y = points[0][1] - (e * turns)
+                outer_z = points[0][2] - w  # Previous layer height
+                
+                # Calculate the start point of this layer (innermost point, new height)
+                start_x = points[0][0]
+                start_y = points[0][1]
+                start_z = points[0][2]  # Current layer height
+                
+                # Calculate via point for smooth transition
+                via_x = (outer_x + start_x) / 2
+                via_y = (outer_y + start_y) / 2
+                via_z = (outer_z + start_z) / 2
+                
+                # Add transition CIRC command
+                if tilt_along_travel_var.get():
+                    heading_deg = math.degrees(math.atan2(start_y - via_y, start_x - via_x))
+                    output_text.insert(tk.END, f"CIRC {{X {via_x}, Y {via_y}, Z {via_z}}},{{X {start_x}, Y {start_y}, Z {start_z}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}\n")
+                else:
+                    output_text.insert(tk.END, f"CIRC {{X {via_x}, Y {via_y}, Z {via_z}}},{{X {start_x}, Y {start_y}, Z {start_z}, A {a}, B {b}, C {c}}}\n")
 
+        # Generate the layer with normal turn order first
+        layer_commands = []
+        
         for turn in range(turns + 1):
             print(f"turn: {turn}")
             i = 1
@@ -470,14 +530,13 @@ def automate():
 
             if turn == 0:
                 if tilt_along_travel_var.get():
-                    # Use provided A/C for the first PTP, keep B tilted if user expects immediate tilt
-                    layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A 180.0, B {tilt_angle_deg}, C 180.0, S 2., T 43.}}")
+                    layer_commands.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A 180.0, B {tilt_angle_deg}, C 180.0, S 2., T 43.}}")
                 else:
-                    layer_output_lines.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}")
+                    layer_commands.append(f"PTP {{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}")
 
             if turn > 0:
                 points[0][1] -= e
-                layer_output_lines.append(f"CIRC {{X {dummy_circ_x}, Y {dummy_circ_y}, Z {points[0][2]}}},{{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}}}")
+                layer_commands.append(f"CIRC {{X {dummy_circ_x}, Y {dummy_circ_y}, Z {points[0][2]}}},{{X {points[0][0]}, Y {points[0][1]}, Z {points[0][2]}, A {a}, B {b}, C {c}}}")
 
             if turn > 0:
                 for k in motion_commands:
@@ -497,18 +556,17 @@ def automate():
                                 dummy_circ_x -= (0.6 * e)
                                 dummy_circ_y -= (0.6 * e)
                             if tilt_along_travel_var.get():
-                                # Heading from previous point to this point
                                 heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
                             i += 1
                         else:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
 
                     elif k == "CIRC":
                         if turn <= turns:
@@ -525,18 +583,17 @@ def automate():
                                 points_circ[j][1] += (e / 2)
                                 points_circ[j + 1][0] -= e
                             if tilt_along_travel_var.get():
-                                # Heading approximated from via->end for arc tangent
                                 heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                             j += 2
                         else:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                 visualize_cuboid()
             elif turn == 0:
                 for k in motion_commands:
@@ -544,81 +601,67 @@ def automate():
                         if turn <= turns:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
                             i += 1
                         else:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points[i][1] - points[i-1][1], points[i][0] - points[i-1][0]))
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {a}, B {b}, C {c}}}")
 
                     elif k == "CIRC":
                         if turn <= turns:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                             j += 2
                         else:
                             if tilt_along_travel_var.get():
                                 heading_deg = math.degrees(math.atan2(points_circ[j + 1][1] - points_circ[j][1], points_circ[j + 1][0] - points_circ[j][0]))
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}")
                             else:
-                                layer_output_lines.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
+                                layer_commands.append(f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}")
                 visualize_cuboid()
 
-        # Build reversed sequence for odd layers if checkbox is enabled
+        # For odd layers, reverse the turn order
         if layer % 2 == 1 and alternate_layer_direction_var.get():
-            motion_lines = [line for line in layer_output_lines if line.startswith(("LIN", "CIRC"))]
-            reconstructed_lines = []
-            circ_blocks = []
-            circ_to_prev_lin = []
-            lin_lines = [line for line in motion_lines if line.startswith("LIN")]
+            # Extract all motion commands (skip PTP)
+            motion_commands = [cmd for cmd in layer_commands if cmd.startswith(("LIN", "CIRC"))]
+            
+            # Count commands per turn by looking at the pattern
+            # Each turn should have: LIN + (CIRC + LIN) pairs
+            # Let's count the total LIN commands to determine turns
+            lin_count = sum(1 for cmd in motion_commands if cmd.startswith("LIN"))
+            commands_per_turn = len(motion_commands) // lin_count
+            
+            # Group commands by turns
+            turn_commands = []
+            for i in range(lin_count):
+                start_idx = i * commands_per_turn
+                end_idx = start_idx + commands_per_turn
+                if end_idx <= len(motion_commands):
+                    turn_commands.append(motion_commands[start_idx:end_idx])
+            
+            # Rebuild layer_commands with reversed turn order
+            layer_commands = []
+            
+            # Start with PTP at the outermost point (Turn3 first point)
+            outermost_x = points[0][0] - (e * turns)
+            outermost_y = points[0][1] - (e * turns)
+            outermost_z = points[0][2]
+            layer_commands.append(f"PTP {{X {outermost_x}, Y {outermost_y}, Z {outermost_z}, A 180.0, B 0.0, C 180.0, S 2., T 43.}}")
+            
+            # Add turns in reverse order (Turn3 → Turn2 → Turn1)
+            for turn_idx in range(len(turn_commands) - 1, 0, -1):
+                layer_commands.extend(turn_commands[turn_idx])
 
-            prev_lin = None
-            for line in motion_lines:
-                if line.startswith("LIN"):
-                    prev_lin = line
-                elif line.startswith("CIRC"):
-                    circ_blocks.append(line)
-                    circ_to_prev_lin.append((line, prev_lin))
-
-            if lin_lines:
-                last_lin_coords = lin_lines[-1][4:].strip()
-                reconstructed_lines.append("PTP " + last_lin_coords[:-1] + ", S 2., T 43.}")
-
-            if circ_blocks:
-                last_circ = circ_blocks[-1]
-                circ_parts = last_circ[5:].split("},{")
-                if len(circ_parts) == 2:
-                    circ_end = circ_parts[1].strip().strip("{}")
-                    reconstructed_lines.append(f"LIN {{{circ_end}}}")
-
-            reversed_pairs = list(reversed(circ_to_prev_lin))
-            for idx, (circ, lin_before) in enumerate(reversed_pairs):
-                circ_parts = circ[5:].split("},{")
-                if len(circ_parts) == 2 and lin_before is not None:
-                    intermediate = circ_parts[0].strip().strip("{}")
-                    lin_coords = lin_before[4:].strip().strip("{}")
-                    reconstructed_lines.append(f"CIRC {{{intermediate}}},{{{lin_coords}}}")
-                    if idx + 1 < len(reversed_pairs):
-                        next_circ = reversed_pairs[idx + 1][0]
-                        next_circ_parts = next_circ[5:].split("},{")
-                        if len(next_circ_parts) == 2:
-                            next_end = next_circ_parts[1].strip().strip("{}")
-                            reconstructed_lines.append(f"LIN {{{next_end}}}")
-                    else:
-                        if lin_lines:
-                            first_lin_point = lin_lines[0][4:].strip().strip("{}")
-                            reconstructed_lines.append(f"LIN {{{first_lin_point}}}")
-
-            layer_output_lines = reconstructed_lines
-
-        for line in layer_output_lines:
+        # Output the layer commands
+        for line in layer_commands:
             output_text.insert(tk.END, line + "\n")
 
 

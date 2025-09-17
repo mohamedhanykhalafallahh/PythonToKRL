@@ -1,0 +1,104 @@
+##LAYER 1
+PTP turn1 pt1
+LIN turn1 pt2
+CIRC turn1 pt3 , pt4
+LIN turn1 pt5
+CIRC turn1 pt6 , pt7
+LIN turn1 pt8
+CIRC turn1 pt9 , pt10
+LIN turn1 pt11
+CIRC (transition to turn2) , turn2 pt1
+LIN turn2 pt2
+CIRC turn2 pt3 , pt4
+LIN turn2 pt5
+CIRC turn2 pt6 , pt7
+LIN turn2 pt8
+CIRC turn2 pt9 , pt10
+LIN turn2 pt11
+CIRC (transition to turn3) , turn3 pt1
+LIN turn3 pt2
+CIRC turn3 pt3 , pt4
+LIN turn3 pt5
+CIRC turn3 pt6 , pt7
+LIN turn3 pt8
+CIRC turn3 pt9 , pt10
+LIN turn3 pt11
+##LAYER 2
+CIRC transition to layer 2 , turn3 pt1
+PTP turn3 pt1 with Z incremented
+LIN turn3 pt2
+CIRC turn3 pt3 , pt4
+LIN turn3 pt5
+CIRC turn3 pt6 , pt7
+LIN turn3 pt8
+CIRC turn3 pt9 , pt10
+LIN turn3 pt11
+CIRC (transition to turn2) , turn2 pt1
+LIN turn2 pt2
+CIRC turn2 pt3 , pt4
+LIN turn2 pt5
+CIRC turn2 pt6 , pt7
+LIN turn2 pt8
+CIRC turn2 pt9 , pt10
+LIN turn2 pt11
+CIRC (transition to turn1) , turn1 pt1
+LIN turn1 pt2
+CIRC turn1 pt3 , pt4
+LIN turn1 pt5
+CIRC turn1 pt6 , pt7
+LIN turn1 pt8
+CIRC turn1 pt9 , pt10
+LIN turn1 pt11
+##LAYER 3
+CIRC transition to layer 3 , turn1 pt1
+PTP turn1 pt1 with Z incremented
+LIN turn1 pt2
+CIRC turn1 pt3 , pt4
+LIN turn1 pt5
+CIRC turn1 pt6 , pt7
+LIN turn1 pt8
+CIRC turn1 pt9 , pt10
+LIN turn1 pt11
+CIRC (transition to turn2) , turn2 pt1
+LIN turn2 pt2
+CIRC turn2 pt3 , pt4
+LIN turn2 pt5
+CIRC turn2 pt6 , pt7
+LIN turn2 pt8
+CIRC turn2 pt9 , pt10
+LIN turn2 pt11
+CIRC (transition to turn3) , turn3 pt1
+LIN turn3 pt2
+CIRC turn3 pt3 , pt4
+LIN turn3 pt5
+CIRC turn3 pt6 , pt7
+LIN turn3 pt8
+CIRC turn3 pt9 , pt10
+LIN turn3 pt11
+##LAYER 4
+CIRC transition to layer 4 , turn3 pt1
+PTP turn3 pt1 with Z incremented
+LIN turn3 pt2
+CIRC turn3 pt3 , pt4
+LIN turn3 pt5
+CIRC turn3 pt6 , pt7
+LIN turn3 pt8
+CIRC turn3 pt9 , pt10
+LIN turn3 pt11
+CIRC (transition to turn2) , turn2 pt1
+LIN turn2 pt2
+CIRC turn2 pt3 , pt4
+LIN turn2 pt5
+CIRC turn2 pt6 , pt7
+LIN turn2 pt8
+CIRC turn2 pt9 , pt10
+LIN turn2 pt11
+CIRC (transition to turn1) , turn1 pt1
+LIN turn1 pt2
+CIRC turn1 pt3 , pt4
+LIN turn1 pt5
+CIRC turn1 pt6 , pt7
+LIN turn1 pt8
+CIRC turn1 pt9 , pt10
+LIN turn1 pt11
+CIRC Final before end to turn1 pt1
