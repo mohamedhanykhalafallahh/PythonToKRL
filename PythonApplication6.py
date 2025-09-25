@@ -562,6 +562,7 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                 if layer == 0:  # Very first turn of the entire sequence
                     # PTP to start point for the very beginning
                     if tilt_along_travel_var.get():
+                        # For PTP, use a default heading (could be improved with actual direction)
                         output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A 180.0, B {tilt_angle_deg}, C 180.0, S 2., T 43.}}\n")
                     else:
                         output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}\n")
@@ -675,11 +676,11 @@ def create_circ_transition(from_point, to_point, a, b, c, tilt_angle_deg):
     
     # Generate the CIRC command
     if tilt_along_travel_var.get():
-        # Calculate heading for the transition
-        heading_deg = math.degrees(math.atan2(to_point[1] - from_point[1], to_point[0] - from_point[0]))
-        output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}\n")
+        # Keep transition CIRC at original orientation - no tilting for transitions
+        output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A 180.0, B 0.0, C 180.0}}\n")
     else:
         output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A {a}, B {b}, C {c}}}\n")
+
 
 def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b, c, tilt_angle_deg):
     """Generate the 11-point path for a single turn"""
@@ -689,17 +690,39 @@ def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b
     for k in turn_motion_commands:
         if k == "LIN":
             if tilt_along_travel_var.get():
-                # Calculate heading for this movement
-                heading_deg = math.degrees(math.atan2(turn_points[i][1] - turn_points[i-1][1], turn_points[i][0] - turn_points[i-1][0]))
-                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}\n")
+                # Coordinate-based tilting approach with direction consideration
+                if i > 0:  # Make sure we have a previous point
+                    # Calculate movement direction
+                    dx = turn_points[i][0] - turn_points[i-1][0]  # X movement
+                    dy = turn_points[i][1] - turn_points[i-1][1]  # Y movement
+                    
+                    # Determine if movement is primarily X or Y
+                    if abs(dx) > abs(dy):  # X translation (horizontal movement)
+                        # Tilt B-axis for X movement with direction (inverted)
+                        lin_a = 180.0  # Constant A
+                        lin_b = -tilt_angle_deg if dx > 0 else tilt_angle_deg  # Inverted: Negative B for positive X, positive B for negative X
+                        lin_c = 180.0  # Constant C
+                    else:  # Y translation (vertical movement)
+                        # Tilt C-axis for Y movement with direction (base C = 180°)
+                        lin_a = 180.0  # Constant A
+                        lin_b = 0.0  # B back to original
+                        # Calculate C relative to base value 180° (inverted)
+                        lin_c = (180.0 + tilt_angle_deg) if dy > 0 else (180.0 - tilt_angle_deg)  # Inverted: 180° + B for positive Y, 180° - B for negative Y
+                else:
+                    # Default starting orientation
+                    lin_a = 180.0
+                    lin_b = 0.0
+                    lin_c = 180.0
+                
+                # Coordinate-based tilting: X movement tilts B, Y movement tilts C
+                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {lin_a}, B {lin_b}, C {lin_c}}}\n")
             else:
                 output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {a}, B {b}, C {c}}}\n")
             i += 1
         elif k == "CIRC":
             if tilt_along_travel_var.get():
-                # Calculate heading for this circular movement
-                heading_deg = math.degrees(math.atan2(turn_points_circ[j + 1][1] - turn_points_circ[j][1], turn_points_circ[j + 1][0] - turn_points_circ[j][0]))
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A 180.0, B {tilt_angle_deg}, C {heading_deg}}}\n")
+                # Keep CIRC at original orientation - no tilting for curves
+                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A 180.0, B 0.0, C 180.0}}\n")
             else:
                 output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}\n")
             j += 2
@@ -1221,11 +1244,22 @@ def automation_instructions():
     messagebox.showinfo(
         "How does Automation Functions work?",
         "Options explained:\n\n"
-        "Auto-Orient Along Travel: When enabled, orientations are set pen-like along motion. A=180°, B=tilt (deg), C=follows path heading. Tilt angle can be set near the Functions menu. Disable to use your own A/B/C.\n\n"
-        "Tips:\n\n"
-        "Use a small tilt (5–15°) to avoid wrist singularities.\n"
-        "Use a small E (filament thickness) to avoid over-extrusion.\n"
-        "Keep your base path consistent (LIN/CIRC order) for best automation results."
+        "Auto-Orient Along Travel: When enabled, orientations use coordinate-based tilting:\n"
+        "• A=180° (constant for all movements)\n"
+        "• B=±tilt angle for X translations (inverted direction)\n"
+        "• C=180°±tilt angle for Y translations (calculated from base C=180°)\n"
+        "Tilt angle can be set near the Functions menu. Disable to use your own A/B/C.\n\n"
+        "Benefits:\n"
+        "• Logical tilting: B-axis for X movements, C-axis for Y movements\n"
+        "• No circular motion issues (no rotation around axis centers)\n"
+        "• Consistent approach angle in appropriate direction\n"
+        "• Tool orientation matches movement direction\n"
+        "• Better suited for layer-by-layer 2D printing\n"
+        "• More predictable tool orientation\n\n"
+        "Tips:\n"
+        "• Use tilt angle 10-20° for best results\n"
+        "• Use small E (filament thickness) to avoid over-extrusion\n"
+        "• Keep base path consistent (LIN/CIRC order) for best automation"
     )
 
 root = tk.Tk()
@@ -1339,7 +1373,7 @@ try:
 except Exception:
     pass
 
-functions_menu.add_checkbutton(label="Auto-Orient Along Travel (B=Tilt Angle)", onvalue=True, offvalue=False,
+functions_menu.add_checkbutton(label="Auto-Orient Along Travel (With Tilt Angle)", onvalue=True, offvalue=False,
                                variable=tilt_along_travel_var)
 functions_menu.add_separator()
 functions_menu.add_command(label="Add Approach\t (Ctrl+Shift+A)", command=open_approach_popup)
@@ -1401,7 +1435,7 @@ tilt_frame.pack()
 tilt_label = tk.Label(tilt_frame, text="Tilt Angle (°) :")
 tilt_label.pack(side="left", padx=(0, 6))
 tilt_entry = tk.Entry(tilt_frame, width=6)
-tilt_entry.insert(0, "10")
+tilt_entry.insert(0, "20")
 tilt_entry.pack(side="left")
 
 add_button = tk.Button(main_tab, text="Add Point", command=add_point)
