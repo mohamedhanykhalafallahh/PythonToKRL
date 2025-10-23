@@ -19,12 +19,6 @@ motion_commands = []
 # Orientations for each line
 orientations = []
 
-# Counter for numbering the KRL codes
-krl_counter = 1
-
-# Flag for whether Automate function is executed
-auto_flag = 0
-
 #For Center Change
 xc = 0 
 yc = 0
@@ -37,8 +31,8 @@ canvas_height = 320
 # Initial scaling factor
 scaling_factor = 3
 
-# Add a global variable to track if a CIRC command has been executed
-circ_executed = False
+# Global variable to track A-axis orientation for smooth transitions
+current_a_angle = 180.0   # Current A angle
 
 # Undo history (bounded)
 UNDO_HISTORY_LIMIT = 10
@@ -52,17 +46,15 @@ def _snapshot_state():
         'points_circ': copy.deepcopy(points_circ),
         'motion_commands': copy.deepcopy(motion_commands),
         'orientations': copy.deepcopy(orientations),
-        'krl_counter': krl_counter,
         'output_text': output_text.get("1.0", tk.END)
     }
 
 def _restore_state(snap):
-    global points, points_circ, motion_commands, orientations, krl_counter
+    global points, points_circ, motion_commands, orientations
     points = copy.deepcopy(snap['points'])
     points_circ = copy.deepcopy(snap['points_circ'])
     motion_commands = copy.deepcopy(snap['motion_commands'])
     orientations = copy.deepcopy(snap['orientations'])
-    krl_counter = snap['krl_counter']
     canvas.delete("all")
     output_text.delete("1.0", tk.END)
     output_text.insert(tk.END, snap['output_text'])
@@ -109,40 +101,110 @@ def validate_coordinates(x, y, z, a, b, c):
     except ValueError:
         return False
 
+def normalize_angle(angle):
+    """Normalize angle to -180 to +180 range"""
+    while angle > 180.0:
+        angle -= 360.0
+    while angle < -180.0:
+        angle += 360.0
+    return angle
 
-def generate_krl_code(points, motion_commands, points_circ, orientations):
+def calculate_smooth_a_angle(dx, dy):
+    """Calculate exact A-angle based on movement direction"""
+    global current_a_angle
+    
+    # Calculate exact angle based on movement direction
+    target_angle = math.degrees(math.atan2(dy, dx))
+    target_angle = normalize_angle(target_angle)
+    
+    # Update current A angle to exact target
+    current_a_angle = target_angle
+    
+    return current_a_angle
+
+def get_current_a_angle():
+    """Get current A-angle without updating it (for LIN movements)"""
+    return current_a_angle
+
+def calculate_transition_a_angle(dx, dy):
+    """Calculate exact A-angle for transitions and update global current_a_angle"""
+    global current_a_angle
+    
+    # Calculate exact angle based on movement direction
+    target_angle = math.degrees(math.atan2(dy, dx))
+    target_angle = normalize_angle(target_angle)
+    
+    # Update global current_a_angle so LIN movements can follow
+    current_a_angle = target_angle
+    
+    return current_a_angle
+
+
+def generate_krl_code(points, motion_commands, points_circ, orientations, a, b, c, tilt_angle_deg):
     krl_code = ""
 
     # Guard against empty input
     if not points:
         return krl_code
 
-    # Handle the origin point separately
+    # Handle the origin point separately - use interface values for PTP start
     origin_point = points[0]
-    krl_code += f"PTP {{X {origin_point[0]}, Y {origin_point[1]}, Z {origin_point[2]}, A {orientations[0][0]}, B {orientations[0][1]}, C {orientations[0][2]}, S 2., T 43.}}\n"
+    krl_code += f"PTP {{X {origin_point[0]}, Y {origin_point[1]}, Z {origin_point[2]}, A {a}, B {tilt_angle_deg}, C {c}, S 2., T 43.}}\n"
 
     i = 1
     j = 0
-    n = 1
 
     for k in motion_commands:
         if k == "LIN":
-            krl_code += f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {orientations[n][0]}, B {orientations[n][1]}, C {orientations[n][2]}}}\n"
+            # Keep A-angle constant from previous movement (no rotation during LIN)
+            lin_a = get_current_a_angle()  # Use current A-angle without change
+            krl_code += f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {lin_a:.1f}, B {tilt_angle_deg}, C {c}}}\n"
             i += 1
-            n += 1
         elif k == "CIRC":
-            # Use orientation of the CIRC end point. Orientations list currently stores two entries per CIRC.
-            krl_code += f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {orientations[n + 1][0]}, B {orientations[n + 1][1]}, C {orientations[n + 1][2]}}}\n"
+            # Calculate A angle based on the NEXT edge direction (not the CIRC diagonal)
+            # This ensures the tool orientation matches the straight edge after the corner
+            
+            middle_x = points_circ[j][0]
+            middle_y = points_circ[j][1]
+            end_x = points_circ[j + 1][0]
+            end_y = points_circ[j + 1][1]
+            
+            # Look ahead to the next LIN point to get the actual edge direction
+            if i < len(points):  # If there's a next LIN point
+                next_x = points[i][0]
+                next_y = points[i][1]
+                # Calculate direction from CIRC end to next LIN point (the actual edge)
+                dx = next_x - end_x
+                dy = next_y - end_y
+            else:
+                # Last CIRC, use direction to first point (closing the loop)
+                next_x = points[0][0]
+                next_y = points[0][1]
+                dx = next_x - end_x
+                dy = next_y - end_y
+            
+            # Use exact A-angle calculation based on next edge direction
+            A_angle = calculate_smooth_a_angle(dx, dy)
+            
+            # Use calculated A, constant B tilt (20°), and constant C (180°)
+            krl_code += f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n"
             j += 2
-            n += 2
 
     return krl_code
 
 def update_krl_code():
-    global auto_flag
-    auto_flag = 1
+    # Get interface values for orientations
+    try:
+        a = float(a_entry.get())
+        b = float(b_entry.get())
+        c = float(c_entry.get())
+        tilt_angle_deg = float(tilt_entry.get())
+    except Exception:
+        a, b, c = 180.0, 20.0, 180.0  # Default fallback values
+        tilt_angle_deg = 10.0
+    
     # Generate KRL code for the points and motion commands
-    krl_code = generate_krl_code(points, motion_commands, points_circ, orientations)
+    krl_code = generate_krl_code(points, motion_commands, points_circ, orientations, a, b, c, tilt_angle_deg)
     # Add initialization lines
     krl_code_with_init = krl_code
     output_text.delete("1.0", tk.END)
@@ -214,7 +276,7 @@ def visualize_cuboid():
         draw_point(point[0], point[1])
 
 def add_point():
-    global points, circ_executed, motion_commands
+    global points, motion_commands
     # Take snapshot only if inputs are valid; will push after validation
     x_str = x_entry.get()
     y_str = y_entry.get()
@@ -263,7 +325,6 @@ def add_point():
         messagebox.showwarning("Too Many Points", "You can only enter up to 11 points to form a cuboid.")
 
 def input_points_for_circ():
-    global circ_executed, krl_counter
     # Create a pop-up window to input points for CIRC motion command
     popup = tk.Toplevel(root)
     popup.title("Input Points for CIRC Command")
@@ -327,7 +388,6 @@ def input_points_for_circ():
 
     # Function to handle the input
     def ok_click():
-        global krl_counter
         # Snapshot prior to applying changes
         _push_undo_snapshot()
         # Get the input values
@@ -347,8 +407,24 @@ def input_points_for_circ():
                 end_x = float(end_x)
                 end_y = float(end_y)
                 end_z = float(end_z)
-                # Generate the KRL code
-                krl_code = f"CIRC {{X {middle_x}, Y {middle_y}, Z {middle_z}}},{{X {end_x}, Y {end_y}, Z {end_z}, A {a}, B {b}, C {c}}}\n"
+                # Calculate A angle based on curve direction for pen-like movement
+                # Get start point (last point in points list)
+                if points:
+                    start_x = points[-1][0]
+                    start_y = points[-1][1]
+                else:
+                    start_x = 0
+                    start_y = 0
+                
+                # Calculate direction vector
+                dx = end_x - start_x
+                dy = end_y - start_y
+                
+                # Use smooth A-angle calculation to avoid large jumps
+                A_angle = calculate_smooth_a_angle(dx, dy)
+                
+                # Generate the KRL code with calculated A, interface B tilt, and interface C
+                krl_code = f"CIRC {{X {middle_x}, Y {middle_y}, Z {middle_z}}},{{X {end_x}, Y {end_y}, Z {end_z}, A {A_angle:.1f}, B {b}, C {c}}}\n"
                 # Append the KRL code to the output text widget
                 points_circ.append((float(middle_x), float(middle_y), float(middle_z)))
                 orientations.append((float(a), float(b), float(c)))
@@ -356,8 +432,6 @@ def input_points_for_circ():
                 points_circ.append((float(end_x), float(end_y), float(end_z)))
                 orientations.append((float(a), float(b), float(c)))
                 output_text.insert(tk.END, krl_code)
-                # Increment the KRL counter
-                krl_counter += 1
                 # Close the pop-up window
                 popup.destroy()
                 # Redraw the cuboid visualization
@@ -375,13 +449,11 @@ def input_points_for_circ():
 
 # Function to handle the selection of motion commands
 def select_motion_command(motion_command):
-    global selected_motion_command, circ_executed
+    global selected_motion_command
     selected_motion_command = motion_command
     # If the selected command is CIRC, prompt the user to input points
     if motion_command == "CIRC":
         input_points_for_circ()
-        # Set the flag indicating that a CIRC command has been executed
-        circ_executed = True
 
 def format_point(pt):
     return f"{{X {pt[0]}, Y {pt[1]}, Z {pt[2]}, A 180.0, B 0.0, C 180.0}}"
@@ -562,9 +634,12 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                 if layer == 0:  # Very first turn of the entire sequence
                     # PTP to start point for the very beginning
                     if tilt_along_travel_var.get():
-                        # For PTP, use a default heading (could be improved with actual direction)
-                        output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A 180.0, B {tilt_angle_deg}, C 180.0, S 2., T 43.}}\n")
+                        # Reset A-angle for comfortable PTP start
+                        current_a_angle = 180.0
+                        output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A {a}, B {tilt_angle_deg}, C {c}, S 2., T 43.}}\n")
                     else:
+                        # Reset A-angle for comfortable PTP start
+                        current_a_angle = float(a)
                         output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}\n")
                 else:  # First turn of subsequent layers - use CIRC transition from previous layer
                     # Add layer transition comment
@@ -584,7 +659,8 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                     last_point_prev_layer = get_last_point_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
                     
                     # Create CIRC transition from previous layer's last point to current layer's first point
-                    create_circ_transition(last_point_prev_layer, turn_points[0], a, b, c, tilt_angle_deg)
+                    # Pass turn_points[1] to calculate correct A-angle for the next edge
+                    create_circ_transition(last_point_prev_layer, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg)
             else:  # Not the first turn - need transition
                 # Create transition from previous turn's end to current turn's start
                 prev_turn = turn_order[turn_idx - 1]
@@ -596,7 +672,8 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                 last_point_prev = get_last_point_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
                 
                 # Create CIRC transition from last point of previous turn to first point of current turn
-                create_circ_transition(last_point_prev, turn_points[0], a, b, c, tilt_angle_deg)
+                # Pass turn_points[1] to calculate correct A-angle for the next edge
+                create_circ_transition(last_point_prev, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg)
             
             # Update global points for visualization
             points = copy.deepcopy(turn_points)
@@ -628,7 +705,7 @@ def get_last_point_of_turn(turn_points, turn_points_circ, turn_motion_commands):
     
     return last_point
 
-def create_circ_transition(from_point, to_point, a, b, c, tilt_angle_deg):
+def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle_deg):
     """Create a CIRC transition between two points with intermediate point"""
     # Create proper rounded transitions like the working corners
     # The key is to use perpendicular offset, not inline offset
@@ -674,12 +751,16 @@ def create_circ_transition(from_point, to_point, a, b, c, tilt_angle_deg):
     draw_line(from_point[0], from_point[1], intermediate_x, intermediate_y, "CIRC")
     draw_line(intermediate_x, intermediate_y, to_point[0], to_point[1], "CIRC")
     
-    # Generate the CIRC command
-    if tilt_along_travel_var.get():
-        # Keep transition CIRC at original orientation - no tilting for transitions
-        output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A 180.0, B 0.0, C 180.0}}\n")
-    else:
-        output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A {a}, B {b}, C {c}}}\n")
+    # Calculate A angle based on the NEXT EDGE direction (from to_point to next_point)
+    # This ensures the tool is oriented correctly for the upcoming straight edge
+    dx = next_point[0] - to_point[0]
+    dy = next_point[1] - to_point[1]
+    
+    # Use transition A-angle calculation to update global current_a_angle
+    A_angle = calculate_transition_a_angle(dx, dy)
+    
+    # Generate the CIRC command with calculated A, interface B tilt, and interface C
+    output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
 
 
 def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b, c, tilt_angle_deg):
@@ -690,57 +771,78 @@ def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b
     for k in turn_motion_commands:
         if k == "LIN":
             if tilt_along_travel_var.get():
-                # Coordinate-based tilting approach with direction consideration
+                # Pen-like movement: tool follows the path direction
                 if i > 0:  # Make sure we have a previous point
                     # Calculate movement direction
                     dx = turn_points[i][0] - turn_points[i-1][0]  # X movement
                     dy = turn_points[i][1] - turn_points[i-1][1]  # Y movement
                     
-                    # Determine if movement is primarily X or Y
-                    if abs(dx) > abs(dy):  # X translation (horizontal movement)
-                        # Tilt B-axis for X movement with direction (inverted)
-                        lin_a = 180.0  # Constant A
-                        lin_b = -tilt_angle_deg if dx > 0 else tilt_angle_deg  # Inverted: Negative B for positive X, positive B for negative X
-                        lin_c = 180.0  # Constant C
-                    else:  # Y translation (vertical movement)
-                        # Tilt C-axis for Y movement with direction (base C = 180°)
-                        lin_a = 180.0  # Constant A
-                        lin_b = 0.0  # B back to original
-                        # Calculate C relative to base value 180° (inverted)
-                        lin_c = (180.0 + tilt_angle_deg) if dy > 0 else (180.0 - tilt_angle_deg)  # Inverted: 180° + B for positive Y, 180° - B for negative Y
+                    # Keep A-angle constant from previous movement (no rotation during LIN)
+                    lin_a = get_current_a_angle()  # Use current A-angle without change
+                    
+                    # Apply constant tilt for pen-like movement
+                    # Keep B-axis constant at tilt angle, only rotate A-axis
+                    lin_b = tilt_angle_deg  # Constant tilt from interface
+                    lin_c = c  # Use interface C value
                 else:
                     # Default starting orientation
-                    lin_a = 180.0
-                    lin_b = 0.0
-                    lin_c = 180.0
+                    lin_a = a  # Use interface A value
+                    lin_b = tilt_angle_deg  # Use interface tilt
+                    lin_c = c  # Use interface C value
                 
-                # Coordinate-based tilting: X movement tilts B, Y movement tilts C
-                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {lin_a}, B {lin_b}, C {lin_c}}}\n")
+                # Pen-like movement: tool follows the path direction
+                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {lin_a:.1f}, B {lin_b:.1f}, C {lin_c:.1f}}}\n")
             else:
                 output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {a}, B {b}, C {c}}}\n")
             i += 1
         elif k == "CIRC":
-            if tilt_along_travel_var.get():
-                # Keep CIRC at original orientation - no tilting for curves
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A 180.0, B 0.0, C 180.0}}\n")
+            # Calculate A angle based on the NEXT edge direction (not the CIRC diagonal)
+            # This ensures the tool orientation matches the straight edge after the corner
+            
+            middle_x = turn_points_circ[j][0]
+            middle_y = turn_points_circ[j][1]
+            end_x = turn_points_circ[j + 1][0]
+            end_y = turn_points_circ[j + 1][1]
+            
+            # Look ahead to the next LIN point to get the actual edge direction
+            if i < len(turn_points):  # If there's a next LIN point
+                next_x = turn_points[i][0]
+                next_y = turn_points[i][1]
+                # Calculate direction from CIRC end to next LIN point (the actual edge)
+                dx = next_x - end_x
+                dy = next_y - end_y
             else:
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}\n")
+                # Last CIRC, use direction to first point (closing the loop)
+                next_x = turn_points[0][0]
+                next_y = turn_points[0][1]
+                dx = next_x - end_x
+                dy = next_y - end_y
+            
+            # Use exact A-angle calculation based on next edge direction
+            A_angle = calculate_smooth_a_angle(dx, dy)
+            
+            if tilt_along_travel_var.get():
+                # Use calculated A, interface B tilt, and interface C
+                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+            else:
+                # Use calculated A, interface B tilt, and interface C
+                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
             j += 2
     
 def clear_for_auto():
-    global krl_counter
+    global current_a_angle
     _push_undo_snapshot()
-    krl_counter = 1
+    current_a_angle = 180.0  # Reset A angle to default
     canvas.delete("all")
     output_text.delete("1.0", tk.END)
 
 def clear_all():
-    global points, points_circ, motion_commands, krl_counter
+    global points, points_circ, motion_commands, current_a_angle
     _push_undo_snapshot()
     points = []
     points_circ = []
     motion_commands = []
-    krl_counter = 1
+    current_a_angle = 180.0  # Reset A angle to default
     canvas.delete("all")
     output_text.delete("1.0", tk.END)
 
@@ -865,11 +967,18 @@ BAS (#PTP_PARAMS,100 )
 $H_POS=XHOME
 PTP  XHOME
 ;ENDFOLD
-; Define base, tool and vel
-BASE_DATA[1] = {{X 0.0, Y 0.0, Z 50.0, A 0.0, B 0.0, C 0.0}}
+; Define base with Tool 3 - Optimized for comfortable robot positioning
+BASE_DATA[1] = {{X 0.0, Y 0.0, Z 200.0, A 0.0, B 0.0, C 0.0}}
 $BASE = BASE_DATA[1]
-TOOL_DATA[1] = {{X 0.0, Y 0.0, Z 20.0, A 0.0, B 0.0, C 0.0}}
-$TOOL = TOOL_DATA[1]
+; Define Tool 3 with calibrated TCP values (MHK-TOOL)
+TOOL_DATA[3] = {{X -6.601, Y 131.225, Z 165.955, A 0.0, B 0.0, C 0.0}}
+$TOOL = TOOL_DATA[3]
+; Set frame data for proper tool usage
+FDAT_ACT = {{TOOL_NO 3, BASE_NO 1, IPO_FRAME #BASE}}
+; Set approximation for smooth motion
+$APO.CDIS = 5.0
+$APO.CPTP = 50
+; Velocities and accelerations
 BAS (#VEL_PTP, 100)
 BAS (#VEL_CP, 2)
 BAS (#ACC_CP, 100)
@@ -1087,15 +1196,15 @@ def open_generate_popup():
     # Labels & entries
     tk.Label(popup, text="Center Xr:").grid(row=0, column=0, padx=20)
     xr_entry = tk.Entry(popup); xr_entry.grid(row=0, column=1, padx=50, pady=30)
-    xr_entry.insert(0, "660")  # default value
+    xr_entry.insert(0, "685")  # default value - adjusted for coordinate shift (+23)
 
     tk.Label(popup, text="Center Yr:").grid(row=1, column=0, padx=20)
     yr_entry = tk.Entry(popup); yr_entry.grid(row=1, column=1, padx=50, pady=30)
-    yr_entry.insert(0, "-125")  # default value
+    yr_entry.insert(0, "25")  # default value - adjusted for coordinate shift (+153)
 
     tk.Label(popup, text="Center Zr:").grid(row=2, column=0, padx=20)
     zr_entry = tk.Entry(popup); zr_entry.grid(row=2, column=1, padx=50, pady=30)
-    zr_entry.insert(0, "120")  # default value
+    zr_entry.insert(0, "50")  # Comfortable working height relative to optimized base
 
     tk.Label(popup, text="Cuboid Length (X):").grid(row=3, column=0, padx=20)
     length_entry = tk.Entry(popup); length_entry.grid(row=3, column=1, padx=50, pady=30)
@@ -1289,12 +1398,12 @@ top_notebook.add(main_tab, text="Main")
 top_notebook.add(help_tab, text="Help")
 top_notebook.grid(row=0, column=0, sticky="nsew")
 
-# Default values
-default_x = 745
-default_y = 10
+# Default values - Optimized for comfortable robot operation
+default_x = 685
+default_y = 25
 default_increment = 0
 default_ori = 180
-tool_z = 125
+tool_z = 50  # Comfortable working height relative to optimized base
 
 # Back button at far left; title centered above X/Y/Z/A/B/C (columns 0–3)
 back_btn = tk.Button(main_tab, text="← Back", command=go_back_to_selector)
