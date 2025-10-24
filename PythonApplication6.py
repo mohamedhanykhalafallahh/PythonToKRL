@@ -971,7 +971,7 @@ PTP  XHOME
 BASE_DATA[1] = {{X 0.0, Y 0.0, Z 200.0, A 0.0, B 0.0, C 0.0}}
 $BASE = BASE_DATA[1]
 ; Define Tool 3 with calibrated TCP values (MHK-TOOL)
-TOOL_DATA[3] = {{X -6.601, Y 131.225, Z 165.955, A 0.0, B 0.0, C 0.0}}
+TOOL_DATA[3] = {{X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0}}
 $TOOL = TOOL_DATA[3]
 ; Set frame data for proper tool usage
 FDAT_ACT = {{TOOL_NO 3, BASE_NO 1, IPO_FRAME #BASE}}
