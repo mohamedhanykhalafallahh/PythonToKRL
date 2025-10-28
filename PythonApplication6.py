@@ -1196,15 +1196,15 @@ def open_generate_popup():
     # Labels & entries
     tk.Label(popup, text="Center Xr:").grid(row=0, column=0, padx=20)
     xr_entry = tk.Entry(popup); xr_entry.grid(row=0, column=1, padx=50, pady=30)
-    xr_entry.insert(0, "685")  # default value - adjusted for coordinate shift (+23)
+    xr_entry.insert(0, "535")  # default value - adjusted for coordinate shift (+23)
 
     tk.Label(popup, text="Center Yr:").grid(row=1, column=0, padx=20)
     yr_entry = tk.Entry(popup); yr_entry.grid(row=1, column=1, padx=50, pady=30)
-    yr_entry.insert(0, "25")  # default value - adjusted for coordinate shift (+153)
+    yr_entry.insert(0, "10")  # default value - adjusted for coordinate shift (+153)
 
     tk.Label(popup, text="Center Zr:").grid(row=2, column=0, padx=20)
     zr_entry = tk.Entry(popup); zr_entry.grid(row=2, column=1, padx=50, pady=30)
-    zr_entry.insert(0, "50")  # Comfortable working height relative to optimized base
+    zr_entry.insert(0, "65")  # Comfortable working height relative to optimized base
 
     tk.Label(popup, text="Cuboid Length (X):").grid(row=3, column=0, padx=20)
     length_entry = tk.Entry(popup); length_entry.grid(row=3, column=1, padx=50, pady=30)
