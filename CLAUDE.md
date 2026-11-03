@@ -47,28 +47,31 @@ Ways to build it:
 ### Export (`save_krl_code`)
 Standard KUKA header (INI folds, PTP HOME). It then sets `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3]` = MHK-TOOL TCP `{X -5.711, Y 128.569, Z 204.993}`, `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` and accelerations. The generated moves and `END` follow. The `DEF` name is taken from the file name.
 
-## Known issues / refinement backlog (found 2026-11-03, none fixed yet)
+## Known issues / refinement backlog (found 2026-11-03; [x] = fixed in PythonApplication6.py only)
 KRL / robot level:
 - [ ] No `C_DIS` on LIN/CIRC lines, so the robot stops exactly at every point (blobs when extruding), even though `$APO.CDIS` is set.
 - [ ] Export overwrites `TOOL_DATA[3]` / `BASE_DATA[1]` on the controller permanently; variants write different TCPs into the same slot.
 - [ ] Verify `BAS(#VEL_CP, 2)`: the unit is m/s, so 2 m/s is very fast for printing.
-- [ ] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).
+- [x] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).
 
 Logic:
 - [ ] Turn offsets are hardcoded by index (`i==1..4`, `j==0,2,4`) and only correct for the Auto-Generate (CCW from top-right) order; the manual order in Help differs.
 - [ ] `range(turns + 1)` / `range(layers + 1)`: entering N gives N+1 turns/layers.
-- [ ] After Automate, the globals hold the last turn, so a second Automate compounds offsets.
+- [x] After Automate, the globals hold the last turn, so a second Automate compounds offsets.
 - [ ] The final closing CIRC (last turn back to pt1, from Sequence.txt) is not generated.
-- [ ] `current_a_angle = 180.0` in `automate_alternating_spiral` lacks `global` (no effect).
-- [ ] The tilt toggle only affects LIN; both CIRC branches (~line 824) are identical.
-- [ ] Automation Help text says "A constant, B/C tilt", but the code does A rotating and B tilt.
+- [x] `current_a_angle = 180.0` in `automate_alternating_spiral` lacks `global` (no effect).
+- [x] The tilt toggle only affects LIN; both CIRC branches (~line 824) are identical.
+- [x] Automation Help text says "A constant, B/C tilt", but the code does A rotating and B tilt.
 - [ ] Labels: "Filament Thickness (E)" is used as the in-plane step and "Filament Width (W)" as the Z step (looks swapped).
 
 Minor:
-- [ ] The 11-point limit is checked after appending the 12th point.
-- [ ] Automate clears the output before validating inputs; it also pushes two undo snapshots.
-- [ ] Undo does not capture `current_a_angle`.
-- [ ] `save_points` indexes `orientations` with separate LIN/CIRC counters (wrong when orientations differ).
+- [x] The 11-point limit is checked after appending the 12th point.
+- [x] Automate clears the output before validating inputs; it also pushes two undo snapshots.
+- [x] Undo does not capture `current_a_angle`.
+- [x] `save_points` indexes `orientations` with separate LIN/CIRC counters (wrong when orientations differ).
 
 ## Progress log
 - 2026-11-03: Initial analysis of the codebase; this file created.
+- 2026-11-03 (home): Fixed 9 backlog items in `PythonApplication6.py`: DEF-name validation, base restored after Automate (re-Automate is idempotent), `global current_a_angle`, tilt-off CIRC uses interface A/B/C, Help text, 11-point check before append, validate-then-clear in Automate (one undo snapshot), undo stores `current_a_angle`, `save_points` orientation index. Verified with a headless Tk test (generate base, Automate twice gives identical output, undo works). Variant files are NOT updated.
+  Still open, needs the owner's decision: C_DIS on moves, TOOL/BASE overwrite, VEL_CP value, N vs N+1 turns/layers, E/W label meaning, final closing CIRC, hardcoded turn-offset indices.
+- Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
