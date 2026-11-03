@@ -3,6 +3,7 @@ from tkinter import messagebox, filedialog
 from tkinter import ttk
 import copy
 import math
+import re
 import sys
 import os
 import subprocess
@@ -46,19 +47,22 @@ def _snapshot_state():
         'points_circ': copy.deepcopy(points_circ),
         'motion_commands': copy.deepcopy(motion_commands),
         'orientations': copy.deepcopy(orientations),
-        'output_text': output_text.get("1.0", tk.END)
+        'current_a_angle': current_a_angle,
+        'output_text': output_text.get("1.0", "end-1c")
     }
 
 def _restore_state(snap):
-    global points, points_circ, motion_commands, orientations
+    global points, points_circ, motion_commands, orientations, current_a_angle
     points = copy.deepcopy(snap['points'])
     points_circ = copy.deepcopy(snap['points_circ'])
     motion_commands = copy.deepcopy(snap['motion_commands'])
     orientations = copy.deepcopy(snap['orientations'])
+    current_a_angle = snap.get('current_a_angle', 180.0)
     canvas.delete("all")
     output_text.delete("1.0", tk.END)
     output_text.insert(tk.END, snap['output_text'])
-    visualize_cuboid()
+    if points:
+        visualize_cuboid()
 
 def _push_undo_snapshot():
     # Keep last 3 states
@@ -289,6 +293,11 @@ def add_point():
         messagebox.showwarning("Invalid Input", "Please enter valid numerical values for X, Y, and Z coordinates or A, B, and C orientations.")
         return
 
+    # Enforce the 11-point limit before adding anything
+    if len(points) + len(points_circ) >= 11:
+        messagebox.showwarning("Too Many Points", "You can only enter up to 11 points to form a cuboid.")
+        return
+
     # Snapshot before mutating state
     _push_undo_snapshot()
     x = float(x_str)
@@ -321,8 +330,6 @@ def add_point():
                 messagebox.showinfo("Stage 1 Completed!", "Manual Base Cuboid Finished:\n\nNow please enter valid numerical values for \n\n E, W, No. of Turns & No. of Layers to prepare for Automation on your provided base \n\n (Considering your base is as Instructed - Read Instructions).\n\nN.b: If this is not the shape you wish for, Please 'Clear All' and Start Again.")
                 print(f"Points: {points}")
                 print(f"Points CIRC: {points_circ}")
-    else:
-        messagebox.showwarning("Too Many Points", "You can only enter up to 11 points to form a cuboid.")
 
 def input_points_for_circ():
     # Create a pop-up window to input points for CIRC motion command
@@ -462,38 +469,46 @@ def format_point(pt):
 def automate():
     global points, points_circ, motion_commands
 
-    _push_undo_snapshot()
-    clear_for_auto()
+    # Validate everything BEFORE touching the current output/state
+    if len(points) < 5 or len(points_circ) < 2:
+        messagebox.showerror("Input Error", "Please create the 11-point base first (manually, by import, or Auto-Generate Base).")
+        return
 
-    # Ensure all points are lists
-    points = [list(point) for point in points]
-    points_circ = [list(point) for point in points_circ]
-
-    # Retrieve input values
     e = E_entry.get()
     w = W_entry.get()
     turns = NumberofTurns_entry.get()
     layers = NumberofLayers_entry.get()
-    a = float(a_entry.get())
-    b = float(b_entry.get())
-    c = float(c_entry.get())
+
+    if not e or not w or not turns or not layers:
+        messagebox.showerror("Input Error", "Please fill in all the required fields in Automation Options.")
+        return
+
+    try:
+        e = float(e)
+        w = float(w)
+        turns = int(turns)
+        layers = int(layers)
+        a = float(a_entry.get())
+        b = float(b_entry.get())
+        c = float(c_entry.get())
+    except ValueError:
+        messagebox.showerror("Input Error", "E and W must be numbers, Turns and Layers must be whole numbers, A/B/C must be numbers.")
+        return
+
     # Read tilt angle (fallback to 10 if invalid)
     try:
         tilt_angle_deg = float(tilt_entry.get())
     except Exception:
         tilt_angle_deg = 10.0
     tilt_angle_deg = max(5.0, min(tilt_angle_deg, 20.0))
-    
-    # Check for input errors
-    if not e or not w or not turns or not layers:
-        messagebox.showerror("Input Error", "Please fill in all the required fields in Automation Options.")
-        return
 
-    # Convert input values to appropriate types
-    e = float(e)
-    w = float(w)
-    turns = int(turns)
-    layers = int(layers)
+    # Inputs OK: one undo snapshot, then clear output (clear_for_auto pushes the snapshot)
+    clear_for_auto()
+
+    # Ensure all points are lists
+    points = [list(point) for point in points]
+    points_circ = [list(point) for point in points_circ]
+
     e = -e
 
     print("Automate action executed with values:")
@@ -504,8 +519,9 @@ def automate():
 
 def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
     """New alternating spiral automation function"""
-    global points, points_circ, motion_commands
-    
+    global points, points_circ, motion_commands, current_a_angle
+    base_motion_commands = copy.deepcopy(motion_commands)
+
     # Storage for points of each turn in each layer
     # Structure: saved_points[layer][turn] = {'points': [...], 'points_circ': [...], 'motion_commands': [...]}
     saved_points = {}
@@ -685,9 +701,15 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
             
             # Update visualization after each turn
             visualize_cuboid()
-    
+
     # Final visualization update
     visualize_cuboid()
+
+    # Restore the base loop into the globals so a second Automate (or Change Center /
+    # Save Points) works on the original base instead of the last generated turn.
+    points = copy.deepcopy(points_initiale)
+    points_circ = copy.deepcopy(points_circular_initiale)
+    motion_commands = base_motion_commands
 
 def get_last_point_of_turn(turn_points, turn_points_circ, turn_motion_commands):
     """Get the last point of a turn's 11-point path"""
@@ -825,8 +847,8 @@ def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b
                 # Use calculated A, interface B tilt, and interface C
                 output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
             else:
-                # Use calculated A, interface B tilt, and interface C
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+                # Auto-orient off: use the interface A/B/C as-is (same as the LIN branch)
+                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}\n")
             j += 2
     
 def clear_for_auto():
@@ -934,7 +956,18 @@ def save_krl_code():
     # Write the KRL code to the file if a file path is provided
     if file_path:
         # Extract the base filename without the extension
-        file_name = file_path.split('/')[-1].split('.')[0]
+        file_name = os.path.splitext(os.path.basename(file_path))[0]
+
+        # The DEF name must match the file name AND be a valid KRL identifier
+        # (letters, digits, underscore; not starting with a digit; max 24 chars).
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,23}", file_name):
+            messagebox.showerror(
+                "Invalid File Name",
+                f"'{file_name}' is not a valid KRL program name.\n\n"
+                "Use only letters, digits and '_' (no spaces or '-'), "
+                "start with a letter, max 24 characters.\n\nNothing was saved."
+            )
+            return
 
         # Create the header with the correct DEF name
         header = f"""&ACCESS RVP
@@ -1079,20 +1112,23 @@ def save_points():
 
                 i = 1  # Index for points (starting from the second point)
                 j = 0  # Index for points_circ
+                o = 1  # Index for orientations (stored in insertion order: LIN = 1 entry, CIRC = 2 entries)
 
                 # Save remaining points and motion commands
                 for k in motion_commands:
                     if k == "LIN":
                         x, y, z = points[i]
-                        a, b, c = orientations[i]
+                        a, b, c = orientations[o]
                         file.write(f"{x} {y} {z} {a} {b} {c} LIN\n")
                         i += 1
+                        o += 1
                     elif k == "CIRC":
                         x1, y1, z1 = points_circ[j]
                         x2, y2, z2 = points_circ[j + 1]
-                        a1, b1, c1 = orientations[j + 1]  # Get A, B, C for the second point of CIRC
+                        a1, b1, c1 = orientations[o + 1]  # Orientation of the CIRC end point
                         file.write(f"{x1} {y1} {z1} {x2} {y2} {z2} {a1} {b1} {c1} CIRC\n")
                         j += 2  # Move to the next pair of points in points_circ
+                        o += 2
 
             messagebox.showinfo("Success", "Points saved successfully!")
         except Exception as e:
@@ -1353,18 +1389,13 @@ def automation_instructions():
     messagebox.showinfo(
         "How does Automation Functions work?",
         "Options explained:\n\n"
-        "Auto-Orient Along Travel: When enabled, orientations use coordinate-based tilting:\n"
-        "• A=180° (constant for all movements)\n"
-        "• B=±tilt angle for X translations (inverted direction)\n"
-        "• C=180°±tilt angle for Y translations (calculated from base C=180°)\n"
-        "Tilt angle can be set near the Functions menu. Disable to use your own A/B/C.\n\n"
-        "Benefits:\n"
-        "• Logical tilting: B-axis for X movements, C-axis for Y movements\n"
-        "• No circular motion issues (no rotation around axis centers)\n"
-        "• Consistent approach angle in appropriate direction\n"
-        "• Tool orientation matches movement direction\n"
-        "• Better suited for layer-by-layer 2D printing\n"
-        "• More predictable tool orientation\n\n"
+        "Auto-Orient Along Travel: When enabled, the tool follows the path like a pen:\n"
+        "• A = direction of travel of the next edge (updated at each corner CIRC)\n"
+        "• LIN moves keep the current A (no rotation along straight edges)\n"
+        "• B = Tilt Angle (clamped to 5–20°)\n"
+        "• C = interface C value\n"
+        "Tilt angle can be set near the Functions menu. Disable to use your own A/B/C\n"
+        "for every LIN and CIRC.\n\n"
         "Tips:\n"
         "• Use tilt angle 10-20° for best results\n"
         "• Use small E (filament thickness) to avoid over-extrusion\n"
