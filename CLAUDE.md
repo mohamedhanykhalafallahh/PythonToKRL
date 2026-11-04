@@ -4,6 +4,25 @@ Tkinter tool that generates KUKA KRL programs offline. You design a path in the 
 
 The owner works on two PCs (office and home) and keeps them in sync through git. Keep this file up to date with decisions and progress, because it is the shared memory between machines.
 
+Working style the owner asked for: go step by step and slowly, plan before coding, and verify each change. Don't rush big rewrites.
+
+## Hardware and process (from the owner, 2026-11-03)
+- **Robot:** KUKA KR 6 R900 sixx (art. 10015565, s/n 502323, 07/2014), 6 kg payload, 901 mm reach, floor mounted. `$TRAFONAME` = `KR6R900 C4SR FLR`, MADA `KRC4_SR\KR_6_R900_sixx\FLOOR`, so the controller is a KR C4 smallsize. KSS version and installed options (EKI/RSI) are not known yet.
+- **Process:** continuous glass-fiber roving (about 3 mm wide), impregnated with resin and cured by UV. The fiber is never cut, so the whole print is one continuous path, which is why every turn and layer is joined by a transition move.
+- **Head ("NouvTete", the new head):** a PETG 3D-printed head. Fiber spool on top, resin funnel, orange resin tube, a spring-loaded roller pressing the fiber onto the bed, and the UV lamp tilted and trailing behind the roller. A follows the travel direction so the lamp always trails. The tilt (B) depends on the roller/nozzle geometry. A more compact head is in progress.
+- **TCP:** measured by the 4-point method on a small metal cylinder, accuracy unsure. The current program writes `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}`. The older MHK value `{X -5.711, Y 128.569, Z 204.993}` was for the old head.
+- **Base:** `BASE_DATA[1] = {Z 200}` is an estimate; the bed is not calibrated. The owner overrides TOOL/BASE in the `.src` because the controller-side settings caused errors (which error is still unknown).
+- **Fiber tension:** currently applied by hand or tape; to be automated later. UV and resin are switched manually for now.
+- **Intended values:** layer height about 1 mm, speed about 10 mm/s. Note that `BAS(#VEL_CP, 2)` means 2 **m/s**; the real speed so far came from the smartPAD override.
+- **Shape goal:** rounded rectangles now (see the sketches: uniform corner radius, tangent to the edges). Later: rounded cuboids, circles, ovals, infinity shapes and free-form.
+
+## Decisions (2026-11-03)
+- C_DIS approximation: yes, to be added.
+- Speed: target about 1 cm/s. Set `$VEL.CP` properly instead of relying on the override.
+- Turns/layers: keep the N+1 behaviour for now (the owner had loop problems with N).
+- TOOL/BASE written in the `.src`: keep for now until the controller-side errors are understood.
+- Deferred: E/W label meaning, final closing CIRC, generic turn offsets.
+
 ## Files
 | File | Role |
 |---|---|
@@ -74,4 +93,12 @@ Minor:
 - 2026-11-03: Initial analysis of the codebase; this file created.
 - 2026-11-03 (home): Fixed 9 backlog items in `PythonApplication6.py`: DEF-name validation, base restored after Automate (re-Automate is idempotent), `global current_a_angle`, tilt-off CIRC uses interface A/B/C, Help text, 11-point check before append, validate-then-clear in Automate (one undo snapshot), undo stores `current_a_angle`, `save_points` orientation index. Verified with a headless Tk test (generate base, Automate twice gives identical output, undo works). Variant files are NOT updated.
   Still open, needs the owner's decision: C_DIS on moves, TOOL/BASE overwrite, VEL_CP value, N vs N+1 turns/layers, E/W label meaning, final closing CIRC, hardcoded turn-offset indices.
+- 2026-11-03 (home): Analysed the real print `NouvTete15.src` (150×300 base, r = 22.5, E = 2, Z step 2, B -3). Findings:
+  - The three normal corners were sent with the CIRC via point at 0.536·r from the fillet centre instead of 0.707·r. Each CIRC is therefore a nearly flat arc (R ≈ 111 mm, 16° sweep) with **about 37° kinks at both ends**, close to a chamfer.
+  - The turn-transition CIRC at the top-right corner is a real, nearly tangent arc (R ≈ 24, 87° sweep, kinks ≤ 4°). So that corner is the only truly round one.
+  - Answered: the owner had changed `inv_sqrt2 = 2 ** -0.5` to `2 ** -0.9` (= 0.536) while experimenting with values from -0.1 to -1. The correct value is -0.5 (the 45° point on the fillet).
+  - The real print shows **outward blobs/loops** at corners 3, 6-7 and 9-10 (owner's sketch), not chamfers. Explanation: A is interpolated over 90° during each CIRC. On the chamfer-like arc the travel direction turns only 16°, so the roller and lamp point up to **37° away from the travel direction**, the roller skids and drags fiber and resin sideways, and the robot stops at the kinks. On a true fillet, linear A matches the tangent exactly (0° misalignment).
+  - Why transition 11→1 is good: its via point sits 20% of the chord off the chord midpoint; an exact quarter circle needs 20.7%. So it is almost a perfect quarter circle (misalignment ≤ 4°). With `2 ** -0.5` the three corners become the same kind of arc. The remaining corner error for turns > 0 is the `E*t/2` via shift (should be `E*t/√2`).
+  - Real speed of this print: about 7.9 m of path in about 50 s at 10% override, so **about 150 mm/s**, roughly 15× the intended 10 mm/s.
+  - Owner's data: 150×300 base, E = W = 2 mm, 10% override, bed tilted about 1-2° (lower to the left, unconfirmed), big resin blob on the bottom edge from stopping at points (no C_DIS).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
