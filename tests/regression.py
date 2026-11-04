@@ -608,11 +608,59 @@ def check_main_app(tmpdir):
     return bad
 
 
+def check_box_rounding(tmpdir):
+    """Main app text box shows the values rounded like the export (profile decimals), the
+    export is unchanged by that, and a change of the profile's decimals re-renders the box
+    from the full-precision values unless the text was edited by hand."""
+    import cuboid
+    import krl_export as kx
+    import path_model as pm
+    bad = []
+    messagebox.showinfo = messagebox.showwarning = messagebox.showerror = lambda *a, **k: None
+    num = re.compile(r"-?\d+\.(\d+)")
+    max_dec = lambda text: max([len(m.group(1)) for ln in text.splitlines() if ln.startswith(("LIN", "CIRC", "PTP"))
+                                for m in num.finditer(ln)] or [0])
+    saved_path = kx.PROFILES_PATH
+    root, app = _new_main_app()
+    try:
+        app.generate()
+        box = app.output_text.get("1.0", "end-1c")
+        if max_dec(box) > 3:
+            bad.append("box shows %d decimals, profile has 3" % max_dec(box))
+        if kx.build_program("X", box + "\n", kx.NOUVTETE) != kx.build_program(
+                "X", pm.program_to_krl(app._generated[0]) + "\n\n", kx.NOUVTETE):
+            bad.append("export of the rounded box differs from the export of the full-precision text")
+        # profile with 5 decimals -> re-render from the full-precision items
+        five = dict(kx.settings_to_dict(kx.NOUVTETE), decimals=5)
+        kx.PROFILES_PATH = os.path.join(tmpdir, "five_decimals.json")
+        kx.save_profiles("NouvTete", {"NouvTete": kx.settings_from_dict(five)}, kx.PROFILES_PATH)
+        app.on_profile_saved()
+        box5 = app.output_text.get("1.0", "end-1c")
+        p = app.read_params()
+        expected = pm.program_to_krl(cuboid.generate(p)[0], decimals=5) + "\n"
+        if box5 != expected or max_dec(box5) != 5:
+            bad.append("box not re-rendered with 5 decimals from the full-precision values")
+        if "5 decimals" not in app.info.cget("text"):
+            bad.append("info line does not say how the values are shown")
+        # hand edit -> no re-render
+        app.output_text.insert("1.0", "; by hand\n")
+        kx.save_profiles("NouvTete", {"NouvTete": kx.NOUVTETE}, kx.PROFILES_PATH)
+        app.on_profile_saved()
+        if not app.output_text.get("1.0", "1.end").startswith("; by hand") or max_dec(app.output_text.get("1.0", tk.END)) != 5:
+            bad.append("hand-edited box was re-rendered")
+    finally:
+        kx.PROFILES_PATH = saved_path
+        root.destroy()
+    return bad
+
+
 def check_old_projects(tmpdir):
     """5c: the main app opens the projects of the old apps (made by check_projects):
     App7 cylinder and App6 Auto-Generate cuboid projects reproduce their saved output exactly
     (no notice) and export the same .src; a base-only App6 project loads with a notice; a
-    hand-made base is handed to the manual editor (App6 started with the project path)."""
+    hand-made base is handed to the manual editor (App6 started with the project path).
+    The text box shows the values rounded like the export, so it equals the saved output
+    rounded the same way (the old projects were saved at full precision)."""
     import json
     import KRL_Generator
     bad = []
@@ -627,27 +675,27 @@ def check_old_projects(tmpdir):
         p = os.path.join(FIXTURES, "app7_cylinder_project.json")
         saved = json.load(open(p))["output"]
         if not app.open_project_from(p) or msgs or app.shape_var.get() != "cylinder" or \
-                app.output_text.get("1.0", "end-1c") != saved:
+                app.output_text.get("1.0", "end-1c") != app.round_text(saved):
             bad.append("old cylinder project: not opened identically (%s)" % msgs)
         app.export_to(os.path.join(tmpdir, "APP7_CYLINDER.src"))
         if open(os.path.join(tmpdir, "APP7_CYLINDER.src")).read() != open(os.path.join(FIXTURES, "APP7_CYLINDER.src")).read():
             bad.append("old cylinder project: export differs from App7's export")
         app.generate()
-        if app.output_text.get("1.0", "end-1c") != saved:
+        if app.output_text.get("1.0", "end-1c") != app.round_text(saved):
             bad.append("old cylinder project: Generate after opening differs")
         # App6 Auto-Generate cuboid project (r 30, 250 x 120, E 2, W 1.5, turns 3 -> 4, layers 1 -> 2, tilt 15)
         msgs.clear()
         p = os.path.join(tmpdir, "cub_project.json")
         saved = json.load(open(p))["output"]
         if not app.open_project_from(p) or msgs or app.shape_var.get() != "cuboid" or \
-                app.output_text.get("1.0", "end-1c") != saved:
+                app.output_text.get("1.0", "end-1c") != app.round_text(saved):
             bad.append("old cuboid project: not opened identically (%s)" % msgs)
         st = app.state()
         if (st["inputs"]["cuboid"]["length"], st["inputs"]["cuboid"]["corner_radius"], st["inputs"]["common"]["turns"],
                 st["inputs"]["common"]["layers"], st["inputs"]["common"]["b"]) != ("250", "30", "4", "2", "15"):
             bad.append("old cuboid project: converted values wrong: %s" % st["inputs"])
         app.generate()
-        if app.output_text.get("1.0", "end-1c") != saved:
+        if app.output_text.get("1.0", "end-1c") != app.round_text(saved):
             bad.append("old cuboid project: Generate after opening differs")
         if "from the Cuboid" not in root.title():
             bad.append("old cuboid project: title does not say it was converted (%r)" % root.title())
@@ -995,6 +1043,7 @@ def main():
                              ("cuboid.py parametric API reproduces the App6 goldens", check_cuboid_params),
                              ("main app (KRL_Generator): same output + its functions", lambda: check_main_app(tmpdir)),
                              ("main app opens old App6 / App7 projects", lambda: check_old_projects(tmpdir)),
+                             ("main app text box rounded like the export", lambda: check_box_rounding(tmpdir)),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

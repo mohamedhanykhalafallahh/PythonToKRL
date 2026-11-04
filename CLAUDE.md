@@ -134,7 +134,7 @@ Logic:
 - [x] `current_a_angle = 180.0` in `automate_alternating_spiral` lacks `global` (no effect).
 - [x] The tilt toggle only affects LIN; both CIRC branches (~line 824) are identical.
 - [x] Automation Help text says "A constant, B/C tilt", but the code does A rotating and B tilt.
-- [ ] Labels: "Filament Thickness (E)" is used as the in-plane step and "Filament Width (W)" as the Z step (looks swapped).
+- [x] Labels: "Filament Thickness (E)" was the in-plane step and "Filament Width (W)" the Z step. Renamed (2026-11-04) to "Turn Step E (mm)" / "Layer Height W (mm)" in App6, and "Turn Step E" / "Layer Height" in the main app.
 
 Minor:
 - [x] The 11-point limit is checked after appending the 12th point.
@@ -289,5 +289,18 @@ Minor:
     - Main app: Tools → Free-form editor (App5); both editors are started with `--from-main`.
     - The `project_files` wrong-app message now points to the KRL Generator.
     - Tests: the CYL goldens run through the main app (`cyl_case_fields` fills in App7's defaults: B 20, 2 layers); `check_projects` uses the main app for the cylinder part; old-format checks use `tests/fixtures/app7_cylinder_project.json` + `APP7_CYLINDER.src` (made by App7, saved time fixed). New checks: App6 Back with and without `--from-main`, and the free-form launch args. ALL IDENTICAL. All three apps launch.
-  - Next: 5e (final checks / screenshots / docs), then 6 (PyInstaller exe) later.
+  - Committed as a96a4ca.
+  - Text box rounding (owner's request): the main app now SHOWS the moves rounded like the export.
+    - `show_items(items)` renders with the active profile's decimals and keeps `_generated = (items, text)`.
+    - `round_text()` rounds any text like the export. Export is unchanged because rounding a rounded value gives the same digits (all goldens still identical).
+    - Open Project compares `round_text(regenerated)` with `round_text(saved)`, so old full-precision projects open without a notice and are then shown rounded.
+    - Export Settings → `on_profile_saved`: if the box still holds exactly the generated text, it is re-rendered from the full-precision items with the new decimals (3 → 5 works); hand-edited text is left alone.
+    - The info line says "values as exported: N decimals (profile …)".
+    - App6 (manual editor) still shows full precision.
+    - Regression `check_box_rounding`.
+  - Step 5e done (final review of step 5):
+    - All 17 menu entries are wired (File: Open/Save Project, Export, Exit; Edit: Undo, Redo, Add Comment, Add Approach, Clear; Tools: 3D View, Fit, Export Settings, Manual editor, Free-form editor; Help: How to use, Current shape, Keyboard and mouse).
+    - Screenshots with frame and menu were checked: main cuboid, main cylinder helix (Z +0.5 per quarter), 3D view with arrows (0 red of 154), Add Approach (pre-filled A/B/C), manual editor started with `--from-main`.
+    - App6 tidy (owner's OK): title is now "Manual 11-point Cuboid Editor (advanced) - KRL Generator"; labels are "Turn Step E (mm)" / "Layer Height W (mm)". Its N+1 counting stays.
+  - Step 5 (all-in-one app) is complete. Next (Priority 3 step 6, later): a PyInstaller exe for the lab PC. Deferred: pre-export checks (step 1), App5 on `krl_export`.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

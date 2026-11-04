@@ -1224,7 +1224,7 @@ def open_3d_view(event=None):
 
 
 root = tk.Tk()
-root.title("Cuboidal KRL Code Generator")
+root.title("Manual 11-point Cuboid Editor (advanced) - KRL Generator")
 
 # =====================================================================================
 # PROJECT FILES (project_files.py): all inputs + the output, to reproduce a print
@@ -1488,12 +1488,12 @@ motion_label.grid(row=5, column=0, columnspan=4)
 
 # Add entry fields and buttons to the GUI
 
-E_label = tk.Label(main_tab, text="Filament Thickness (E):")
+E_label = tk.Label(main_tab, text="Turn Step E (mm):")
 E_label.grid(row=6, column=0)
 E_entry = tk.Entry(main_tab)
 E_entry.grid(row=6, column=1)
 
-W_label = tk.Label(main_tab, text="Filament Width (W):")
+W_label = tk.Label(main_tab, text="Layer Height W (mm):")
 W_label.grid(row=6, column=2)
 W_entry = tk.Entry(main_tab)
 W_entry.grid(row=6, column=3)

@@ -75,6 +75,8 @@ HELP_GENERAL = (
     "- Turn Step E: distance between neighbouring turns (wall = Turns x E).\n"
     "- Layer Height: Z step between layers.\n"
     "- B / Tilt is used as typed (no limits).\n"
+    "- The moves are shown rounded exactly as they are exported (Export Settings > Coordinate\n"
+    "  decimals; changing it updates the text box if you did not edit it by hand).\n"
     "- The text box is exported as shown: you may add comments or approach moves\n"
     "  (Edit menu, inserted at the text cursor) or edit lines by hand.\n"
     "- Save Project keeps every input and the output, to repeat a print exactly.\n"
@@ -213,7 +215,7 @@ class MainApp:
         t.add_command(label="Fit Top View", command=self.fit_view)
         t.add_separator()
         t.add_command(label="Export Settings (TOOL/BASE profiles)...",
-                      command=lambda: export_settings_dialog.open_dialog(self.root))
+                      command=lambda: export_settings_dialog.open_dialog(self.root, on_saved=self.on_profile_saved))
         t.add_separator()
         t.add_command(label="Manual 11-point editor (advanced)...", command=self.open_manual_editor)
         t.add_command(label="Free-form editor (experimental)...", command=self.open_free_form_editor)
@@ -437,15 +439,42 @@ class MainApp:
         items, info = gen.generate(p)
         if record_undo:
             self.push_undo()
-        self.output_text.delete("1.0", tk.END)
-        self.output_text.insert(tk.END, pm.program_to_krl(items) + "\n")
-        self.output_text.edit_reset()
-        self.view = None
-        self.redraw()
-        self._update_info()
+        self.show_items(items)
         if warnings:
             messagebox.showwarning("Check the path", "\n".join(warnings))
         return True
+
+    # ---------------------------------------------------------------- shown rounding
+    def _decimals(self):
+        """Decimals of the active export profile (None = full precision): the text box shows
+        the values exactly as they will be exported."""
+        return krl_export.active_settings()[0].decimals
+
+    def round_text(self, text):
+        """KRL text with the move values rounded like the export (other lines unchanged)."""
+        d = self._decimals()
+        return text if d is None else pm.program_to_krl(pm.parse_krl(text), decimals=d)
+
+    def show_items(self, items):
+        """Put generated moves into the text box, rounded like the export. The full-precision
+        items are kept, so a later change of the profile's decimals can re-render them."""
+        text = pm.program_to_krl(items, decimals=self._decimals()) + "\n"
+        self.output_text.delete("1.0", tk.END)
+        self.output_text.insert(tk.END, text)
+        self.output_text.edit_reset()
+        self._generated = (items, text)
+        self.view = None
+        self.redraw()
+        self._update_info()
+
+    def on_profile_saved(self, _settings=None):
+        """Export Settings saved: if the box still holds the generated text (no hand edits),
+        show it again with the (possibly new) decimals."""
+        gen = getattr(self, "_generated", None)
+        if gen and self.output_text.get("1.0", "end-1c") == gen[1]:
+            self.show_items(gen[0])
+        else:
+            self._update_info()
 
     def _update_info(self):
         items = pm.parse_krl(self.body_text())
@@ -457,9 +486,13 @@ class MainApp:
         xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
         hc = pm.heading_checks(items)
         a_txt = ("A vs travel: max %.1f deg" % max(h['dev'] for h in hc)) if hc else "no A values"
+        settings = krl_export.active_settings()[0]
+        shown = ("values as exported: %d decimals (profile %s)" % (settings.decimals, settings.profile)
+                 if settings.decimals is not None else "values at full precision (profile %s)" % settings.profile)
         self.info.config(text=(
-            "%d moves  |  path %.2f m  |  X %.1f..%.1f  Y %.1f..%.1f  Z %.1f..%.1f mm  |  %s"
-            % (len(moves), pm.path_length(moves) / 1000.0, min(xs), max(xs), min(ys), max(ys), min(zs), max(zs), a_txt)))
+            "%d moves  |  path %.2f m  |  X %.1f..%.1f  Y %.1f..%.1f  Z %.1f..%.1f mm  |  %s\n%s"
+            % (len(moves), pm.path_length(moves) / 1000.0, min(xs), max(xs), min(ys), max(ys), min(zs), max(zs),
+               a_txt, shown)))
 
     def clear(self):
         self.push_undo()
@@ -678,11 +711,16 @@ class MainApp:
                                     "The sizes were loaded and the saved output was kept. Press Generate "
                                     "to create the print.")
             else:
+                # Same print if the regenerated output equals the saved one after rounding both
+                # like the export (older projects were saved at full precision). Then show the
+                # regenerated output (rounded); otherwise keep the saved text as it is.
                 p = self.read_params(quiet=True)
                 same = False
                 if p is not None and not self._generator().validate(p)[0]:
                     items, _ = self._generator().generate(p)
-                    same = pm.program_to_krl(items) + "\n" == saved
+                    same = self.round_text(pm.program_to_krl(items) + "\n") == self.round_text(saved)
+                    if same:
+                        self.show_items(items)
                 if not same:
                     messagebox.showinfo("Open Project",
                                         "The saved output differs from what this version generates "
