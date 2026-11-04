@@ -148,6 +148,40 @@ def check_krl_export():
     return bad
 
 
+def check_path_model():
+    """path_model: exact text round trip of every golden file, and a continuous 3D path
+    with one move per LIN/CIRC line. Returns a list of failure messages."""
+    import glob
+    import path_model as pm
+    bad = []
+    files = sorted(glob.glob(os.path.join(GOLDEN, "*")))
+    if not files:
+        return ["no golden files to check"]
+    for path in files:
+        with open(path) as f:
+            text = f.read()
+        items = pm.parse_krl(text)
+        if pm.program_to_krl(items) != text:
+            bad.append("round trip changed %s" % os.path.basename(path))
+        start, moves = pm.path_3d(items)
+        n_lin_circ = sum(isinstance(i, (pm.Lin, pm.Circ)) for i in items)
+        if len(moves) != n_lin_circ:
+            bad.append("%s: %d 3D moves for %d LIN/CIRC lines" % (os.path.basename(path), len(moves), n_lin_circ))
+        pos = start
+        for k, m in enumerate(moves):
+            # arcs start at centre + radius vector: equal to the start up to float noise
+            if max(abs(u - v) for u, v in zip(m['pts'][0], pos)) > 1e-9:
+                bad.append("%s: 3D path not continuous at move %d" % (os.path.basename(path), k))
+                break
+            pos = m['pts'][-1]
+    # Hand edits in the output box are still understood (KRL is case-insensitive)
+    hand = ("PTP {X 0, Y 0, Z 0, A 1, B 2, C 3, S 2., T 43.}\n   LIN {X 10, Y 0, Z 0}\n"
+            "lin {x 10, y 10, z 0, a 1, b 2, c 3} c_dis\nLIN {X 0, Y 10, Z 0} ; note\n")
+    if len(pm.path_3d(pm.parse_krl(hand))[1]) != 3:
+        bad.append("hand-edited lines not all read")
+    return bad
+
+
 def check_invalid_name_not_saved(tmpdir):
     """Exporting to an invalid KRL name must show an error and write nothing."""
     errors = []
@@ -216,6 +250,7 @@ def main():
                     print("DIFF   %s: %s" % (fname, first_diff(expected, text)))
                     failed += 1
         for label, check in (("krl_export unit checks", check_krl_export),
+                             ("path_model round trip / 3D path", check_path_model),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

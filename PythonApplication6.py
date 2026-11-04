@@ -9,6 +9,7 @@ import os
 import subprocess
 
 import krl_export   # shared header / TOOL / BASE / C_DIS / DEF-name export
+import path_model as pm   # move types, KRL line formatting/parsing, 3D geometry
 
 # Variables to store the points
 points = []
@@ -107,6 +108,41 @@ def redo_action(event=None):
         _restore_state(snap)
 
 
+# ---------------------------------------------------------------- KRL line output
+# Every generated KRL line goes through these helpers, so the line format (and any future
+# rounding) is defined in one place: path_model.
+PTP_S, PTP_T = 2, 43          # Status / Turn written on every PTP (fixed for now)
+
+def emit(item):
+    """Append one path_model item (Ptp/Lin/Circ/Comment) to the output box as a KRL line."""
+    output_text.insert(tk.END, item.to_krl() + "\n")
+
+def ptp_item(xyz, abc):
+    return pm.Ptp(pm.pose(xyz, abc, PTP_S, PTP_T))
+
+def lin_item(xyz, abc):
+    return pm.Lin(pm.pose(xyz, abc))
+
+def circ_item(via, end, abc):
+    return pm.Circ(pm.pose(via), pm.pose(end, abc))
+
+def emit_ptp(xyz, abc):
+    emit(ptp_item(xyz, abc))
+
+def emit_lin(xyz, abc):
+    emit(lin_item(xyz, abc))
+
+def emit_circ(via, end, abc):
+    emit(circ_item(via, end, abc))
+
+def emit_comment(text):
+    emit(pm.Comment(text))
+
+def a1(v):
+    """Angle rounded to 0.1 deg (what the computed A/B/C values are written with)."""
+    return round(float(v), 1)
+
+
 def validate_coordinates(x, y, z, a, b, c):
     try:
         x = float(x)
@@ -167,7 +203,7 @@ def generate_krl_code(points, motion_commands, points_circ, orientations, a, b, 
 
     # Handle the origin point separately - use interface values for PTP start
     origin_point = points[0]
-    krl_code += f"PTP {{X {origin_point[0]}, Y {origin_point[1]}, Z {origin_point[2]}, A {a}, B {tilt_angle_deg}, C {c}, S 2., T 43.}}\n"
+    krl_code += ptp_item(origin_point, (a, tilt_angle_deg, c)).to_krl() + "\n"
 
     i = 1
     j = 0
@@ -176,7 +212,7 @@ def generate_krl_code(points, motion_commands, points_circ, orientations, a, b, 
         if k == "LIN":
             # Keep A-angle constant from previous movement (no rotation during LIN)
             lin_a = get_current_a_angle()  # Use current A-angle without change
-            krl_code += f"LIN {{X {points[i][0]}, Y {points[i][1]}, Z {points[i][2]}, A {lin_a:.1f}, B {tilt_angle_deg}, C {c}}}\n"
+            krl_code += lin_item(points[i], (a1(lin_a), tilt_angle_deg, c)).to_krl() + "\n"
             i += 1
         elif k == "CIRC":
             # Calculate A angle based on the NEXT edge direction (not the CIRC diagonal)
@@ -205,7 +241,7 @@ def generate_krl_code(points, motion_commands, points_circ, orientations, a, b, 
             A_angle = calculate_smooth_a_angle(dx, dy)
             
             # Use calculated A, constant B tilt (20°), and constant C (180°)
-            krl_code += f"CIRC {{X {points_circ[j][0]}, Y {points_circ[j][1]}, Z {points_circ[j][2]}}},{{X {points_circ[j + 1][0]}, Y {points_circ[j + 1][1]}, Z {points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n"
+            krl_code += circ_item(points_circ[j], points_circ[j + 1], (a1(A_angle), tilt_angle_deg, c)).to_krl() + "\n"
             j += 2
 
     return krl_code
@@ -487,9 +523,9 @@ def add_point():
 
     if len(points+points_circ) <= 11:
             if len(points) > 1:
-                output_text.insert(tk.END, f"LIN {{X {x}, Y {y}, Z {z}, A {a}, B {b}, C {c}}}\n")
+                emit_lin((x, y, z), (a, b, c))
             else:
-                output_text.insert(tk.END, f"PTP {{X {x}, Y {y}, Z {z}, A {a}, B {b}, C {c}, S 2., T 43.}}\n")
+                emit_ptp((x, y, z), (a, b, c))
             if len(points+points_circ) == 11:
                 dummy_og_y= ((points[1][1] + points_circ[1][1])/2)
                 dummy_final_y = dummy_og_y - (0.3*dummy_og_y)
@@ -602,14 +638,14 @@ def input_points_for_circ():
                 A_angle = calculate_smooth_a_angle(dx, dy)
                 
                 # Generate the KRL code with calculated A, interface B tilt, and interface C
-                krl_code = f"CIRC {{X {middle_x}, Y {middle_y}, Z {middle_z}}},{{X {end_x}, Y {end_y}, Z {end_z}, A {A_angle:.1f}, B {b}, C {c}}}\n"
+                circ = circ_item((middle_x, middle_y, middle_z), (end_x, end_y, end_z), (a1(A_angle), b, c))
                 # Append the KRL code to the output text widget
                 points_circ.append((float(middle_x), float(middle_y), float(middle_z)))
                 orientations.append((float(a), float(b), float(c)))
                 motion_commands.append("CIRC")
                 points_circ.append((float(end_x), float(end_y), float(end_z)))
                 orientations.append((float(a), float(b), float(c)))
-                output_text.insert(tk.END, krl_code)
+                emit(circ)
                 # Close the pop-up window
                 popup.destroy()
                 # Redraw the cuboid visualization
@@ -632,10 +668,6 @@ def select_motion_command(motion_command):
     # If the selected command is CIRC, prompt the user to input points
     if motion_command == "CIRC":
         input_points_for_circ()
-
-def format_point(pt):
-    return f"{{X {pt[0]}, Y {pt[1]}, Z {pt[2]}, A 180.0, B 0.0, C 180.0}}"
-
 
 def automate():
     global points, points_circ, motion_commands
@@ -791,12 +823,12 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
         print(f"Outputting layer: {layer}")
         
         # Add layer comment
-        layer_comment = f"; ===== LAYER {layer} ====="
+        layer_comment = f"===== LAYER {layer} ====="
         if layer % 2 == 0:
             layer_comment += " (OUTWARD SPIRAL)"
         else:
             layer_comment += " (INWARD SPIRAL)"
-        output_text.insert(tk.END, layer_comment + "\n")
+        emit_comment(layer_comment)
         
         if layer % 2 == 0:  # Even layers: normal outward spiral
             turn_order = list(range(turns + 1))  # 0, 1, 2, 3
@@ -807,13 +839,13 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
             print(f"  Outputting turn: {turn}")
             
             # Add turn comment
-            turn_comment = f"; L{layer} T{turn} - "
+            turn_comment = f"L{layer} T{turn} - "
             if turn_idx == 0:
                 turn_comment += "START"
             else:
                 prev_turn = turn_order[turn_idx - 1]
                 turn_comment += f"TRANSITION from T{prev_turn}"
-            output_text.insert(tk.END, turn_comment + "\n")
+            emit_comment(turn_comment)
             
             # Get the saved data for this turn
             turn_data = saved_points[layer][turn]
@@ -828,14 +860,14 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                     if tilt_along_travel_var.get():
                         # Reset A-angle for comfortable PTP start
                         current_a_angle = 180.0
-                        output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A {a}, B {tilt_angle_deg}, C {c}, S 2., T 43.}}\n")
+                        emit_ptp(turn_points[0], (a, tilt_angle_deg, c))
                     else:
                         # Reset A-angle for comfortable PTP start
                         current_a_angle = float(a)
-                        output_text.insert(tk.END, f"PTP {{X {turn_points[0][0]}, Y {turn_points[0][1]}, Z {turn_points[0][2]}, A {a}, B {b}, C {c}, S 2., T 43.}}\n")
+                        emit_ptp(turn_points[0], (a, b, c))
                 else:  # First turn of subsequent layers - use CIRC transition from previous layer
                     # Add layer transition comment
-                    output_text.insert(tk.END, f"; L{layer-1} -> L{layer} TRANSITION\n")
+                    emit_comment(f"L{layer-1} -> L{layer} TRANSITION")
                     
                     # Get the last point of the previous layer's last turn
                     prev_layer = layer - 1
@@ -982,19 +1014,19 @@ def _fillet_transition(prev_point, from_point, to_point, next_point, c, tilt_ang
         # Straight continuation of the incoming edge: A stays as it is
         a_now = get_current_a_angle()
         draw_line(sx, sy, f1x, f1y, "LIN", color="purple")
-        output_text.insert(tk.END, f"LIN {{X {f1x}, Y {f1y}, Z {zf1}, A {a_now:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+        emit_lin((f1x, f1y, zf1), (a1(a_now), tilt_angle_deg, c))
     else:
         f1x, f1y = sx, sy
     draw_arc(f1x, f1y, vx, vy, f2x, f2y, "CIRC", color="purple")
     draw_point(vx, vy, "purple")
     A_angle = calculate_transition_a_angle(uox, uoy)        # A at arc end = outgoing direction
     if lin2 > 1e-6:
-        output_text.insert(tk.END, f"CIRC {{X {vx}, Y {vy}, Z {zv}}},{{X {f2x}, Y {f2y}, Z {zf2}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+        emit_circ((vx, vy, zv), (f2x, f2y, zf2), (a1(A_angle), tilt_angle_deg, c))
         draw_line(f2x, f2y, tx, ty, "LIN", color="purple")
-        output_text.insert(tk.END, f"LIN {{X {tx}, Y {ty}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+        emit_lin((tx, ty, to_point[2]), (a1(A_angle), tilt_angle_deg, c))
     else:
         # Arc ends exactly on to_point: write to_point itself (no rounding drift)
-        output_text.insert(tk.END, f"CIRC {{X {vx}, Y {vy}, Z {zv}}},{{X {tx}, Y {ty}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+        emit_circ((vx, vy, zv), (tx, ty, to_point[2]), (a1(A_angle), tilt_angle_deg, c))
     return True
 
 def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle_deg, prev_point=None):
@@ -1056,7 +1088,7 @@ def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle
     A_angle = calculate_transition_a_angle(dx, dy)
     
     # Generate the CIRC command with calculated A, interface B tilt, and interface C
-    output_text.insert(tk.END, f"CIRC {{X {intermediate_x}, Y {intermediate_y}, Z {intermediate_z}}},{{X {to_point[0]}, Y {to_point[1]}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+    emit_circ((intermediate_x, intermediate_y, intermediate_z), to_point, (a1(A_angle), tilt_angle_deg, c))
 
 
 def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b, c, tilt_angle_deg):
@@ -1087,9 +1119,9 @@ def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b
                     lin_c = c  # Use interface C value
                 
                 # Pen-like movement: tool follows the path direction
-                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {lin_a:.1f}, B {lin_b:.1f}, C {lin_c:.1f}}}\n")
+                emit_lin(turn_points[i], (a1(lin_a), a1(lin_b), a1(lin_c)))
             else:
-                output_text.insert(tk.END, f"LIN {{X {turn_points[i][0]}, Y {turn_points[i][1]}, Z {turn_points[i][2]}, A {a}, B {b}, C {c}}}\n")
+                emit_lin(turn_points[i], (a, b, c))
             i += 1
         elif k == "CIRC":
             # Calculate A angle based on the NEXT edge direction (not the CIRC diagonal)
@@ -1119,10 +1151,10 @@ def generate_turn_path(turn_points, turn_points_circ, turn_motion_commands, a, b
             
             if tilt_along_travel_var.get():
                 # Use calculated A, interface B tilt, and interface C
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+                emit_circ(turn_points_circ[j], turn_points_circ[j + 1], (a1(A_angle), tilt_angle_deg, c))
             else:
                 # Auto-orient off: use the interface A/B/C as-is (same as the LIN branch)
-                output_text.insert(tk.END, f"CIRC {{X {turn_points_circ[j][0]}, Y {turn_points_circ[j][1]}, Z {turn_points_circ[j][2]}}},{{X {turn_points_circ[j + 1][0]}, Y {turn_points_circ[j + 1][1]}, Z {turn_points_circ[j + 1][2]}, A {a}, B {b}, C {c}}}\n")
+                emit_circ(turn_points_circ[j], turn_points_circ[j + 1], (a, b, c))
             j += 2
     
 def clear_for_auto():
@@ -1371,7 +1403,7 @@ def open_commentary_popup():
     def submit_comment():
         comment = comment_entry.get()
         if comment:
-            output_text.insert(tk.END, '; ' + comment + '\n')
+            emit_comment(comment)
         popup.destroy()  # Close the popup after submission
 
     # Create a submit button
@@ -1432,7 +1464,7 @@ def open_approach_popup():
                     aa = float(aa)
                     ba = float(ba)
                     ca = float(ca)
-                    output_text.insert(tk.END, f"PTP {{X {xa}, Y {ya}, Z {za}, A {aa}, B {ba}, C {ca}, S 2., T 43.}}\n")
+                    emit_ptp((xa, ya, za), (aa, ba, ca))
                     popup.destroy()  # Close the popup after submission
 
                 except ValueError:
@@ -1528,13 +1560,13 @@ def open_generate_popup():
         # PTP 1
         points.append((start_top_right[0], start_top_right[1], Z))
         orientations.append((A, B, C))
-        output_text.insert(tk.END, f"PTP {{X {start_top_right[0]}, Y {start_top_right[1]}, Z {Z}, A {A}, B {B}, C {C}, S 2., T 43.}}\n")
+        emit_ptp((start_top_right[0], start_top_right[1], Z), (A, B, C))
 
         # LIN 2 (top edge toward TL)
         points.append((top_left_approach[0], top_left_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {top_left_approach[0]}, Y {top_left_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_lin((top_left_approach[0], top_left_approach[1], Z), (A, B, C))
 
         # CIRC 3–4 (round TL corner)
         points_circ.extend([
@@ -1545,13 +1577,13 @@ def open_generate_popup():
         orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {mid_TL[0]}, Y {mid_TL[1]}, Z {Z}}},{{X {left_top_approach[0]}, Y {left_top_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_circ((mid_TL[0], mid_TL[1], Z), (left_top_approach[0], left_top_approach[1], Z), (A, B, C))
 
         # LIN 5 (left edge toward BL)
         points.append((left_bottom_approach[0], left_bottom_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {left_bottom_approach[0]}, Y {left_bottom_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_lin((left_bottom_approach[0], left_bottom_approach[1], Z), (A, B, C))
 
         # CIRC 6–7 (round BL corner)
         points_circ.extend([
@@ -1561,13 +1593,13 @@ def open_generate_popup():
         orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {mid_BL[0]}, Y {mid_BL[1]}, Z {Z}}},{{X {bottom_left_approach[0]}, Y {bottom_left_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_circ((mid_BL[0], mid_BL[1], Z), (bottom_left_approach[0], bottom_left_approach[1], Z), (A, B, C))
 
         # LIN 8 (bottom edge toward BR)
         points.append((bottom_right_approach[0], bottom_right_approach[1], Z))
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {bottom_right_approach[0]}, Y {bottom_right_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_lin((bottom_right_approach[0], bottom_right_approach[1], Z), (A, B, C))
 
         # CIRC 9–10 (round BR corner)
         points_circ.extend([
@@ -1577,14 +1609,14 @@ def open_generate_popup():
         orientations.append((A, B, C))
         orientations.append((A, B, C))
         motion_commands.append("CIRC")
-        output_text.insert(tk.END, f"CIRC {{X {mid_BR[0]}, Y {mid_BR[1]}, Z {Z}}},{{X {right_bottom_approach[0]}, Y {right_bottom_approach[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_circ((mid_BR[0], mid_BR[1], Z), (right_bottom_approach[0], right_bottom_approach[1], Z), (A, B, C))
 
         # LIN 11 (right edge toward TR)
         right_top = (right_top_approach[0], right_top_approach[1], Z)
         points.append(right_top)
         orientations.append((A, B, C))
         motion_commands.append("LIN")
-        output_text.insert(tk.END, f"LIN {{X {right_top[0]}, Y {right_top[1]}, Z {Z}, A {A}, B {B}, C {C}}}\n")
+        emit_lin((right_top[0], right_top[1], Z), (A, B, C))
 
         popup.destroy()
         visualize_cuboid()
@@ -1628,104 +1660,11 @@ def automation_instructions():
 # all layers stacked in Z, CIRCs as real 3D arcs, transitions in purple.
 # Left-drag rotates, right/middle-drag moves, wheel zooms, double-click resets.
 # =====================================================================================
-_NUM_3D = r"(-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)"
-_XYZ_RES_3D = [re.compile(r"\b" + k + r"\s+" + _NUM_3D) for k in ("X", "Y", "Z")]
 LAYER_COLORS_3D = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#8c564b",
                    "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#393b79"]
 TRANSITION_COLOR_3D = "purple"
 
-def _xyz_3d(text):
-    vals = []
-    for rx in _XYZ_RES_3D:
-        m = rx.search(text)
-        if not m:
-            return None
-        vals.append(float(m.group(1)))
-    return tuple(vals)
-
-def _v_sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-def _v_add(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
-def _v_mul(a, k): return (a[0] * k, a[1] * k, a[2] * k)
-def _v_dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-def _v_cross(a, b): return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-def _arc_points_3d(p1, pv, p2, step_deg=5.0):
-    """Points along the circular arc p1 -> pv -> p2 in 3D (what a KUKA CIRC does).
-    Falls back to the straight polyline if the three points are collinear."""
-    a, b = _v_sub(p1, p2), _v_sub(pv, p2)
-    axb = _v_cross(a, b)
-    n2 = _v_dot(axb, axb)
-    if n2 < 1e-12:
-        return [p1, pv, p2]
-    # circumcentre of the triangle (p2 as origin)
-    c = _v_add(p2, _v_mul(_v_cross(_v_sub(_v_mul(b, _v_dot(a, a)), _v_mul(a, _v_dot(b, b))), axb), 1.0 / (2 * n2)))
-    r_vec = _v_sub(p1, c)
-    R = math.sqrt(_v_dot(r_vec, r_vec))
-    e1 = _v_mul(r_vec, 1.0 / R)
-    nhat = _v_mul(axb, 1.0 / math.sqrt(n2))
-    e2 = _v_cross(nhat, e1)
-    two_pi = 2 * math.pi
-    def ang(q):
-        d = _v_sub(q, c)
-        return math.atan2(_v_dot(d, e2), _v_dot(d, e1)) % two_pi
-    av, a2 = ang(pv), ang(p2)
-    sweep = a2 if av <= a2 else -(two_pi - a2)       # go the way that passes the via point
-    n = max(4, int(abs(math.degrees(sweep)) / step_deg))
-    pts = []
-    for k in range(n + 1):
-        t = sweep * k / n
-        pts.append(_v_add(c, _v_add(_v_mul(e1, R * math.cos(t)), _v_mul(e2, R * math.sin(t)))))
-    pts[-1] = p2
-    return pts
-
-def parse_path_3d(text):
-    """Read the KRL motion lines into a list of moves:
-    {'kind': 'LIN'/'CIRC', 'pts': [(x,y,z), ...], 'layer': n, 'transition': bool}.
-    Returns (start_point, moves)."""
-    moves, pos, start = [], None, None
-    layer, in_transition = 0, False
-    layer_re = re.compile(r";\s*=+\s*LAYER\s+(\d+)")
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith(";"):
-            m = layer_re.match(line)
-            if m:
-                layer = int(m.group(1))
-            if "TRANSITION" in line:
-                in_transition = True
-            continue
-        code = line.split(";")[0]
-        if code.startswith("PTP"):
-            p = _xyz_3d(code)
-            if p:
-                pos = p
-                if start is None:
-                    start = p
-        elif code.startswith("LIN") and pos is not None:
-            p = _xyz_3d(code)
-            if p:
-                moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition})
-                pos = p
-        elif code.startswith("CIRC") and pos is not None and "},{" in code:
-            via_txt, end_txt = code.split("},{", 1)
-            pv, p2 = _xyz_3d(via_txt), _xyz_3d(end_txt)
-            if pv and p2:
-                moves.append({'kind': 'CIRC', 'pts': _arc_points_3d(pos, pv, p2), 'layer': layer,
-                              'transition': in_transition})
-                pos = p2
-                in_transition = False   # a transition ends with (at most) one CIRC ...
-    # ... except the inward kind, which is CIRC + a short straight LIN into P1. That LIN is
-    # followed by the turn's own LIN in the same direction (two LINs in a row never happen
-    # inside a turn), so mark it as part of the transition.
-    for i in range(len(moves) - 2):
-        m0, m1, m2 = moves[i], moves[i + 1], moves[i + 2]
-        if m0['transition'] and m0['kind'] == 'CIRC' and m1['kind'] == 'LIN' and m2['kind'] == 'LIN':
-            d1 = _v_sub(m1['pts'][-1], m1['pts'][0])
-            d2 = _v_sub(m2['pts'][-1], m2['pts'][0])
-            l1, l2 = math.sqrt(_v_dot(d1, d1)), math.sqrt(_v_dot(d2, d2))
-            if l1 > 0 and l2 > 0 and _v_dot(d1, d2) / (l1 * l2) > 0.9999:
-                m1['transition'] = True
-    return start, moves
+# KRL text -> 3D moves: path_model.parse_krl + path_model.path_3d (shared with other tools)
 
 def _nice_length(x):
     """Round number (1, 2 or 5 x 10^k) close to x, for the axis length."""
@@ -1781,7 +1720,7 @@ class View3D:
 
     # ---------- data ----------
     def reload(self):
-        self.start, self.moves = parse_path_3d(output_text.get("1.0", tk.END))
+        self.start, self.moves = pm.path_3d(pm.parse_krl(output_text.get("1.0", tk.END)))
         pts = [p for m in self.moves for p in m['pts']] + ([self.start] if self.start else [])
         self.pts_all = pts
         if not pts:
@@ -1846,7 +1785,7 @@ class View3D:
         o_s = scr(o)
         for d, col, name in (((L, 0, 0), "#d62728", "X"), ((0, L, 0), "#2ca02c", "Y"),
                              ((0, 0, L / zex), "#1f77b4", "Z")):
-            e_s = scr(_v_add(o, d))
+            e_s = scr((o[0] + d[0], o[1] + d[1], o[2] + d[2]))
             c.create_line(*o_s, *e_s, fill=col, width=2, arrow=tk.LAST)
             c.create_text(e_s[0] + 8, e_s[1] - 8, text=name, fill=col, font=("Segoe UI", 9, "bold"))
 
