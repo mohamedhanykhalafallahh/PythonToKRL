@@ -225,6 +225,7 @@ def arc_points_3d(p1, pv, p2, step_deg=5.0):
 
 
 _LAYER_RE = re.compile(r";\s*=+\s*LAYER\s+(\d+)")
+_N_MOVES_RE = re.compile(r"\((\d+)\s+moves?\)")
 
 
 def path_3d(items):
@@ -232,9 +233,11 @@ def path_3d(items):
     {'kind': 'LIN'/'CIRC', 'pts': [(x,y,z), ...], 'layer': n, 'transition': bool}.
 
     Layers come from '; ===== LAYER n' comments. Moves after a comment containing
-    'TRANSITION' are transition moves up to and including the first CIRC."""
+    'TRANSITION' are transition moves up to and including the first CIRC, or exactly the
+    next n moves if the comment says '(n moves)' (e.g. a lane change made of two arcs)."""
     moves, pos, start = [], None, None
     layer, in_transition = 0, False
+    n_left = None                                   # moves left in a '(n moves)' transition
     for item in items:
         if isinstance(item, Raw) and item.text.strip() != item.text:
             item = parse_line(item.text.strip())     # hand-indented line: still show it
@@ -246,12 +249,15 @@ def path_3d(items):
                     layer = int(m.group(1))
                 if "TRANSITION" in line:
                     in_transition = True
+                    m = _N_MOVES_RE.search(line)
+                    n_left = int(m.group(1)) if m else None
             continue
         if isinstance(item, Ptp):
             pos = item.target.xyz
             if start is None:
                 start = pos
-        elif isinstance(item, Lin) and pos is not None:
+            continue
+        if isinstance(item, Lin) and pos is not None:
             p = item.target.xyz
             moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition})
             pos = p
@@ -260,7 +266,14 @@ def path_3d(items):
             moves.append({'kind': 'CIRC', 'pts': arc_points_3d(pos, item.via.xyz, p2), 'layer': layer,
                           'transition': in_transition})
             pos = p2
-            in_transition = False   # a transition ends with (at most) one CIRC ...
+            if n_left is None:
+                in_transition = False   # a transition ends with (at most) one CIRC ...
+        else:
+            continue
+        if n_left is not None:
+            n_left -= 1
+            if n_left <= 0:
+                in_transition, n_left = False, None
     # ... except the inward kind, which is CIRC + a short straight LIN into P1. That LIN is
     # followed by the turn's own LIN in the same direction (two LINs in a row never happen
     # inside a turn), so mark it as part of the transition.
@@ -273,6 +286,55 @@ def path_3d(items):
             if l1 > 0 and l2 > 0 and _v_dot(d1, d2) / (l1 * l2) > 0.9999:
                 m1['transition'] = True
     return start, moves
+
+
+def _norm(v):
+    n = math.sqrt(_v_dot(v, v))
+    return _v_mul(v, 1.0 / n) if n > 0 else None
+
+
+def move_tangents(start, item):
+    """Exact unit travel directions (3D) at the start and the end of a LIN / CIRC that
+    begins at `start`. Returns (t_start, t_end), or None for a degenerate move."""
+    p2 = item.target.xyz
+    if isinstance(item, Lin):
+        t = _norm(_v_sub(p2, start))
+        return (t, t) if t else None
+    pv = item.via.xyz
+    a, b = _v_sub(start, p2), _v_sub(pv, p2)
+    axb = _v_cross(a, b)
+    n2 = _v_dot(axb, axb)
+    if n2 < 1e-12:                                   # collinear "arc": a straight line
+        t = _norm(_v_sub(p2, start))
+        return (t, t) if t else None
+    c = _v_add(p2, _v_mul(_v_cross(_v_sub(_v_mul(b, _v_dot(a, a)), _v_mul(a, _v_dot(b, b))), axb), 1.0 / (2 * n2)))
+    nhat = _norm(axb)
+    tan = lambda p: _norm(_v_cross(nhat, _v_sub(p, c)))
+    t1, t2 = tan(start), tan(p2)
+    if _v_dot(t1, _v_sub(pv, start)) < 0:           # make it point along the travel
+        t1, t2 = _v_mul(t1, -1), _v_mul(t2, -1)
+    return t1, t2
+
+
+def tangent_kinks(items):
+    """Kink angle (deg) at every join between consecutive LIN/CIRC moves (0 = tangent),
+    as a list of (index of the move after the join, angle)."""
+    out, pos, prev_end, k = [], None, None, 0
+    for item in items:
+        if isinstance(item, Ptp):
+            pos, prev_end = item.target.xyz, None
+            continue
+        if not isinstance(item, (Lin, Circ)) or pos is None:
+            continue
+        t = move_tangents(pos, item)
+        if t and prev_end:
+            # atan2(|a x b|, a.b) is accurate near 0 deg (acos is not)
+            cr = _v_cross(prev_end, t[0])
+            out.append((k, math.degrees(math.atan2(math.sqrt(_v_dot(cr, cr)), _v_dot(prev_end, t[0])))))
+        prev_end = t[1] if t else None
+        pos = item.target.xyz
+        k += 1
+    return out
 
 
 def path_length(moves):

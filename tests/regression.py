@@ -40,8 +40,117 @@ CASES = {
 }
 
 
+# Cylinder app (PythonApplication7): input fields as typed in the GUI, plus checkboxes
+CYL_CASES = {
+    "CYL_default":    dict(fields={}, orient=True, helix=False, cdis=True),
+    "CYL_thick_5T":   dict(fields=dict(step="3", turns="5", layers="3", layer_height="1"), orient=True, helix=False, cdis=True),
+    "CYL_D200_moved": dict(fields=dict(xc="400", yc="-50", z0="30", inner_diameter="200", step="2.5", turns="4",
+                                       layers="2", layer_height="1.5", b="-3"), orient=True, helix=False, cdis=True),
+    "CYL_helix":      dict(fields=dict(turns="1", layers="4", inner_diameter="150"), orient=True, helix=True, cdis=True),
+    "CYL_orient_off": dict(fields=dict(a="170", b="5", c="175"), orient=False, helix=False, cdis=False),
+}
+
+
 class AppError(Exception):
     pass
+
+
+def run_cyl_case(case, tmpdir, name):
+    """Cylinder app: set the fields, Generate, Export. Returns {'src': text}."""
+    errors = []
+    messagebox.showerror = lambda title, msg, **k: errors.append("%s: %s" % (title, msg))
+    messagebox.showwarning = lambda title, msg, **k: errors.append("WARNING %s: %s" % (title, msg))
+    messagebox.showinfo = lambda *a, **k: None
+    import PythonApplication7 as app7
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = app7.CylinderApp(root)
+        for key, value in case["fields"].items():
+            app.vars[key].set(value)
+        app.auto_orient_var.set(case["orient"])
+        app.helix_var.set(case["helix"])
+        app.c_dis_var.set(case["cdis"])
+        if not app.generate():
+            raise AppError("Generate failed")
+        path = os.path.join(tmpdir, name + ".src")
+        if not app.export_to(path):
+            raise AppError("Export failed")
+        with open(path) as f:
+            out = {"src": f.read()}
+    finally:
+        root.destroy()
+    if errors:
+        raise AppError("; ".join(errors))
+    return out
+
+
+def check_cylinder():
+    """cylinder.generate on several parameter sets: every flat join tangent, climbs only kink
+    by their slope, arc radii = rings or the lane-change radii, exact move/transition counts,
+    Z on the layer levels and monotone, A = travel direction. Returns failure messages."""
+    import cylinder as cy
+    import path_model as pm
+    sets = [
+        dict(xc=535, yc=10, z0=65, inner_diameter=100, step=2, layer_height=2, turns=1, layers=3),
+        dict(xc=535, yc=10, z0=65, inner_diameter=100, step=3, layer_height=1, turns=5, layers=4),
+        dict(xc=400, yc=-50, z0=30, inner_diameter=200, step=2.5, layer_height=1.5, turns=8, layers=3),
+        dict(xc=535, yc=10, z0=65, inner_diameter=150, step=2, layer_height=2, turns=1, layers=4, helix=True),
+        dict(xc=0, yc=0, z0=0, inner_diameter=30, step=3, layer_height=1, turns=2, layers=2),
+    ]
+    bad = []
+    for kw in sets:
+        p = cy.CylinderParams(**kw)
+        label = "D%g E%g N%d M%d%s" % (p.inner_diameter, p.step, p.turns, p.layers, " helix" if p.helix else "")
+        items, info = cy.generate(p)
+        motions = [i for i in items if isinstance(i, (pm.Lin, pm.Circ))]
+        if len(motions) != p.layers * (5 * p.turns - 1):
+            bad.append("%s: %d moves, expected %d" % (label, len(motions), p.layers * (5 * p.turns - 1)))
+        pos, climb = items[0].target.xyz, []
+        for m in motions:
+            climb.append(abs(m.target.z - pos[2]) > 1e-12)
+            pos = m.target.xyz
+        for k, ang in pm.tangent_kinks(items):
+            limit = 3.0 if (climb[k] or climb[k - 1]) else 1e-9
+            if ang > limit:
+                bad.append("%s: kink %.3g deg at move %d" % (label, ang, k))
+                break
+        rings = [p.inner_diameter / 2 + p.step * t for t in range(p.turns)]
+        s = p.step * (1 + math.cos(math.pi / 4))          # lane-change centre offset for beta = 45 deg
+        allowed = rings + [r + s for r in rings] + [r - s for r in rings] + \
+                  [r + p.step - s for r in rings] + [r - p.step + s for r in rings]
+        pos, worst_a = items[0].target.xyz, 0.0
+        for m, cl in zip(motions, climb):
+            a, b = pm._v_sub(pos, m.target.xyz), pm._v_sub(m.via.xyz, m.target.xyz)
+            axb = pm._v_cross(a, b)
+            centre = pm._v_add(m.target.xyz, pm._v_mul(pm._v_cross(pm._v_sub(pm._v_mul(b, pm._v_dot(a, a)),
+                               pm._v_mul(a, pm._v_dot(b, b))), axb), 1.0 / (2 * pm._v_dot(axb, axb))))
+            R = math.sqrt(pm._v_dot(pm._v_sub(pos, centre), pm._v_sub(pos, centre)))
+            if not cl and min(abs(R - x) for x in allowed) > 1e-6 * max(1.0, R):
+                bad.append("%s: unexpected arc radius %.6f" % (label, R))
+                break
+            t_end = pm.move_tangents(pos, m)[1]
+            heading = math.degrees(math.atan2(t_end[1], t_end[0]))
+            worst_a = max(worst_a, abs((m.target.a - heading + 180) % 360 - 180))
+            pos = m.target.xyz
+        if worst_a > 0.051:
+            bad.append("%s: A off the travel direction by %.3f deg" % (label, worst_a))
+        zs = [m.target.z for m in motions]
+        if any(b2 < a2 - 1e-12 for a2, b2 in zip(zs, zs[1:])):
+            bad.append("%s: Z not monotone" % label)
+        levels = [p.z0 + p.layer_height * l for l in range(p.layers)]
+        if not p.helix and any(min(abs(z - L) for L in levels) > 1e-9 for z in zs):
+            bad.append("%s: an end point is off the layer levels" % label)
+        n_tr = sum(m['transition'] for m in pm.path_3d(items)[1])
+        exp_tr = p.layers * (p.turns - 1) * 2 + (0 if p.helix else p.layers - 1)
+        if n_tr != exp_tr:
+            bad.append("%s: %d transition moves in the 3D view, expected %d" % (label, n_tr, exp_tr))
+        if (p.inner_diameter / 2 - p.step * 2 ** -0.5 < cy.MIN_RADIUS_WARN) != bool(info["warnings"]):
+            bad.append("%s: min-radius warning wrong" % label)
+    errs = cy.validate(cy.CylinderParams(0, 0, 0, 100, 2, 2, 3, 2, helix=True))[0]
+    if not errs:
+        bad.append("helix with 3 turns was accepted")
+    return bad
 
 
 def _set(entry, value):
@@ -273,9 +382,10 @@ def main():
     os.makedirs(GOLDEN, exist_ok=True)
     failed = 0
     with tempfile.TemporaryDirectory() as tmpdir:
-        for name, case in CASES.items():
+        runs = [(n, c, run_case) for n, c in CASES.items()] + [(n, c, run_cyl_case) for n, c in CYL_CASES.items()]
+        for name, case, runner in runs:
             try:
-                out = run_case(case, tmpdir, name)
+                out = runner(case, tmpdir, name)
             except Exception as ex:
                 print("ERROR  %s: %s" % (name, ex))
                 failed += 1
@@ -304,6 +414,7 @@ def main():
         for label, check in (("krl_export unit checks", check_krl_export),
                              ("path_model round trip / 3D path", check_path_model),
                              ("shapes offset (CCW + CW, exact sides and radii)", check_shapes),
+                             ("cylinder geometry (tangent, radii, counts, A, Z)", check_cylinder),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

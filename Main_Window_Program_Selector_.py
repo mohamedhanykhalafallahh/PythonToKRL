@@ -18,7 +18,9 @@ def open_sub_program(program_type):
             subprocess.Popen([sys.executable, script], shell=False)
             root.destroy()
         elif program_type == "Cylindrical":
-            messagebox.showinfo("Experimental Feature", "Cylindrical program is still experimental and in development.")
+            script = resource_path("PythonApplication7.py")
+            subprocess.Popen([sys.executable, script], shell=False)
+            root.destroy()
         elif program_type == "Free form":
             script = resource_path("PythonApplication5.py")
             if os.path.exists(script):

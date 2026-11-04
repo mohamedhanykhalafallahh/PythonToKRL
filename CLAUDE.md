@@ -27,8 +27,11 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | File | Role |
 |---|---|
 | `PythonApplication6.py` | **Main program**, "Cuboidal KRL Code Generator". |
-| `PythonApplication1–5, 7.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"); 7 = circle drawer. |
-| `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Free form opens App5, Cylindrical is a placeholder. Not the current focus. |
+| `PythonApplication7.py` | **Cylinder app** ("Cylinder KRL Code Generator", class `CylinderApp`). Inputs → `cylinder.generate` → text box, top view, 3D view, export via `krl_export` (`export_to(path)` without a dialog, for tests). |
+| `cylinder.py` | Cylinder path generator (no tkinter): `CylinderParams`, `validate`, `generate` → (path_model items, info), `_lane_change` (tangent biarc between rings). |
+| `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by App6 and App7. |
+| `PythonApplication1–5.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"). |
+| `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Cylindrical opens App7, Free form opens App5. |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
 | `krl_export.py` | Shared `.src` export (no tkinter): header, BASE/TOOL/speed profile (`ExportSettings`, `NOUVTETE`), `add_c_dis`, DEF-name check, `build_program`. Used by App6; App5 and the cylinder app are to follow. |
 | `path_model.py` | Path model (no tkinter): `Pose`, `Ptp`/`Lin`/`Circ`/`Comment`/`Raw` items with `to_krl()`; `fmt()` = the ONE number formatter; `parse_krl` (text → items, exact round trip for all app output, unknown lines kept as `Raw`, case-insensitive); `path_3d` (items → 3D polylines with layer/transition flags) and `path_length`. |
@@ -65,6 +68,27 @@ Ways to build it:
 
 ### Export (`save_krl_code` → `krl_export.build_program`)
 `save_krl_code` only does the file dialog and the error message. The `.src` text comes from the shared module `krl_export.py`: the standard KUKA header (INI folds, PTP HOME), then the settings of an `ExportSettings` profile (currently `NOUVTETE` = `DEFAULT_SETTINGS`: `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}` (assumed), `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` and accelerations), then the moves (with `add_c_dis` unless switched off) and `END`. The `DEF` name is the file name and must pass `is_valid_program_name`. To change a TCP, speed or header line, edit the profile in `krl_export.py`, not the apps.
+
+## How PythonApplication7 (cylinder) works
+Decisions from the owner (2026-11-04):
+- Concentric rings with a tangent lane change (not a continuous spiral).
+- Layer change at the seam (stepped), plus an optional helix for 1 turn.
+- No direction reversal: NouvTete15 ran about 9 CCW loops without an A6 error, so A6 is not limiting.
+- Exactly N turns/layers.
+- Diameters 100–200 mm; warning when an arc radius is below 20 mm (the cuboid printed fine at r = 22.5).
+- Start at angle 0 (+X side).
+
+Path (`cylinder.generate`):
+- Ring t: radius R_t = D_inner/2 + E·t, counter-clockwise, made of 4 quarter CIRCs (via at 45°), each starting at angle 0.
+- The last quarter (270° → 360°) is the seam:
+  - Lane change to the next ring: two tangent 45° arcs (`_lane_change`). The centres are offset by s = ΔR(1+cos45°)/(2 sin²45°) = 1.707·ΔR along the end radials. Arc radii are R+1.707E and R−0.707E outward (mirrored inward), so the smallest arc is R0 − 0.707E. The other root of that equation gives a joint on the far side, which is wrong; this was checked.
+  - On the last ring of a layer: the climb to the next layer (Z rises along the quarter, kink = slope, about 0.5–1.6°).
+  - On the very last ring: a flat quarter.
+- Even layers go outward, odd layers inward. Moves per layer: 5N − 1.
+- Helix (N = 1 only): every quarter rises H/4, and the last loop is flat.
+- Comments: `===== LAYER n ===== (OUTWARD|INWARD SPIRAL | SINGLE RING[, HELIX])`, `Ll Tt`, `Ll Tt -> Tt' TRANSITION (2 moves)`, `Ll -> Ll+1 TRANSITION (1 move)`. `path_3d` understands `(n moves)`.
+- Orientation, auto-orient on: A = travel direction at each CIRC end (rounded 0.1), the PTP already points along the travel direction (A 90), B = B/Tilt field, C as entered. Auto-orient off: A/B/C as entered. B is not clamped (App6 clamps its tilt to 5–20). PTP S 2 / T 43 as in App6.
+- Coordinates use full precision (same as App6). Rounding is still on the backlog.
 
 ## Known issues / refinement backlog (found 2026-11-03; [x] = fixed in PythonApplication6.py only)
 KRL / robot level:
@@ -155,5 +179,12 @@ Minor:
     - Regression additions: case `REG_r40` (3 new golden files; the existing goldens are unchanged) and `check_shapes` (CCW + CW, including the stadium).
   - Step 4 committed as 1330d96.
   - Step 5 done (owner's decision: none of their differences are needed): the variant files `PythonApplication6 - Backup.py`, `- Copie.py`, `- Copie (2).py` and `- large curve.py` were deleted with `git rm`. They are still in git history (e.g. `git show 1330d96:"PythonApplication6 - Copie (2).py"`). What they had: Copie (2) had tilt clamped to 0, TCP `{X 10, Y 0, Z 205, A 180}` (now the default anyway) and Zr default 0; large curve was the same plus `inv_sqrt2 = 2 ** -0.0` (bulging corners); Copie had an older "smooth" shortest-rotation A and `krl_counter`; Backup predated the spiral and orientation work. Nothing referenced them.
-  - Priority 1 (shared core) is complete. Next: Priority 2, the cylinder app (App7 rewrite on `krl_export` + `path_model` + `shapes`).
+  - Priority 1 (shared core) is complete. Variant deletion committed as f16c0fd.
+- 2026-11-04: Priority 2, cylinder app (steps C1–C5, see "How PythonApplication7 works"):
+  - C1 `cylinder.py`. Also added to `path_model`: `move_tangents`, `tangent_kinks` (atan2-based, accurate near 0°; acos gave a 1e-6° floor) and the `TRANSITION (n moves)` rule in `path_3d`. Verified on 6 parameter sets: flat joins tangent to 1e-13°, radii exact, counts, Z, A within the 0.1 rounding, 3D transition counts. In 3D, App6's layer climbs also kink by their slope (about 2° on 300×150; the 2D checks were 0°).
+  - C2 `view3d.py`: the 3D view moved out of App6 (206 lines). App6 regression identical; open twice → one window; close/reopen works.
+  - C3 `PythonApplication7.py` rewritten from scratch (the old file was a stub with invalid KRL). Headless and screenshot checks were done (top view + 3D view of 5 turns × 3 layers). The text box does not wrap and has a horizontal scrollbar.
+  - C4: the selector's Cylindrical button launches App7; App7 has Back and Help.
+  - C5: regression has 5 `CYL_*` cases (golden `.src`) and `check_cylinder`. The App6 goldens are unchanged. ALL IDENTICAL.
+  - Next: the owner tests the cylinder (dry run first). Then Priority 3 (UI: parametric panel, pre-export checks such as length/time/kinks, JSON project files, possibly merging App6 and App7 into one app with a shape choice).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
