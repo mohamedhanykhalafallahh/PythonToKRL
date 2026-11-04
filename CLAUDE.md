@@ -27,10 +27,6 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | File | Role |
 |---|---|
 | `PythonApplication6.py` | **Main program**, "Cuboidal KRL Code Generator". |
-| `PythonApplication6 - Copie (2).py` | Variant: tilt clamped to 0, TCP `{X 10, Y 0, Z 205, A 180}`, Zr default 0. |
-| `PythonApplication6 - large curve.py` | Same as Copie (2), plus Xr = 525 and `inv_sqrt2 = 2 ** -0.0` (= 1): the CIRC via point lies outside the fillet arc, so corners bulge. |
-| `PythonApplication6 - Copie.py` | Older A-angle approach ("smooth" shortest-rotation A) and `krl_counter`. |
-| `PythonApplication6 - Backup.py` | Older version from before the alternating spiral and orientation work. |
 | `PythonApplication1–5, 7.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"); 7 = circle drawer. |
 | `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Free form opens App5, Cylindrical is a placeholder. Not the current focus. |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
@@ -75,7 +71,7 @@ KRL / robot level:
 - [x] No `C_DIS` on LIN/CIRC lines, so the robot stops exactly at every point (blobs when extruding), even though `$APO.CDIS` is set.
 - [x] The main file's export header wrote the OLD head TCP. Now it writes `{X 10, Y 0, Z 205, A 180}` (NouvTete, assumed). The old value is kept as a comment in the `.src`.
 - [ ] Verify the NouvTete TCP (owner): compare with the `TOOL_DATA[3]` line in `NouvTete15.src` and with the controller's tool data.
-- [ ] Export overwrites `TOOL_DATA[3]` / `BASE_DATA[1]` on the controller permanently; variants write different TCPs into the same slot.
+- [ ] Export overwrites `TOOL_DATA[3]` / `BASE_DATA[1]` on the controller permanently (and App5 writes a different TCP into `TOOL_DATA[1]`).
 - [ ] Verify `BAS(#VEL_CP, 2)`: the unit is m/s, so 2 m/s is very fast for printing.
 - [x] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).
 
@@ -157,5 +153,7 @@ Minor:
       - Invalid inputs show an error and leave the state unchanged.
       - A clockwise base now grows exactly d on every side, with radius r + d and tangent; the old table did not grow it at all.
     - Regression additions: case `REG_r40` (3 new golden files; the existing goldens are unchanged) and `check_shapes` (CCW + CW, including the stadium).
-  - Next: step 5, delete the variant files (`- Copie`, `- Copie (2)`, `- large curve`, `- Backup`) and turn their differences into options (needs the owner's OK on which options matter: tilt clamp 0, TCP profile, Zr default).
+  - Step 4 committed as 1330d96.
+  - Step 5 done (owner's decision: none of their differences are needed): the variant files `PythonApplication6 - Backup.py`, `- Copie.py`, `- Copie (2).py` and `- large curve.py` were deleted with `git rm`. They are still in git history (e.g. `git show 1330d96:"PythonApplication6 - Copie (2).py"`). What they had: Copie (2) had tilt clamped to 0, TCP `{X 10, Y 0, Z 205, A 180}` (now the default anyway) and Zr default 0; large curve was the same plus `inv_sqrt2 = 2 ** -0.0` (bulging corners); Copie had an older "smooth" shortest-rotation A and `krl_counter`; Backup predated the spiral and orientation work. Nothing referenced them.
+  - Priority 1 (shared core) is complete. Next: Priority 2, the cylinder app (App7 rewrite on `krl_export` + `path_model` + `shapes`).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
