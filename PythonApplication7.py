@@ -16,6 +16,7 @@ import cylinder
 import export_settings_dialog
 import krl_export
 import path_model as pm
+import project_files
 import view3d
 
 TRANSITION_COLOR = "purple"
@@ -104,9 +105,13 @@ class CylinderApp:
         for col, (text, cmd) in enumerate((("Generate", self.generate), ("3D View", self.open_3d_view),
                                            ("Export KRL Code", self.export), ("Clear", self.clear))):
             tk.Button(buttons, text=text, command=cmd, width=13).grid(row=0, column=col, padx=3, pady=3)
-        tk.Button(buttons, text="Export Settings (TOOL/BASE profiles)...",
+        tk.Button(buttons, text="Open Project...", command=self.open_project).grid(
+            row=1, column=0, sticky="ew", padx=3, pady=(0, 3))
+        tk.Button(buttons, text="Save Project...", command=self.save_project).grid(
+            row=1, column=1, sticky="ew", padx=3, pady=(0, 3))
+        tk.Button(buttons, text="Export Settings (profiles)...",
                   command=lambda: export_settings_dialog.open_dialog(self.root)).grid(
-            row=1, column=0, columnspan=4, sticky="ew", padx=3, pady=(0, 3))
+            row=1, column=2, columnspan=2, sticky="ew", padx=3, pady=(0, 3))
 
         right = tk.Frame(root)
         right.grid(row=1, column=1, sticky="n", padx=10, pady=8)
@@ -209,6 +214,67 @@ class CylinderApp:
         with open(path, "w") as f:
             f.write(code)
         messagebox.showinfo("KRL Code Exported", "The KRL code has been exported successfully.")
+        return True
+
+    # ------------------------------------------------------------------ project files
+    def project_data(self):
+        return {
+            "inputs": {k: v.get() for k, v in self.vars.items()},
+            "options": {"auto_orient": self.auto_orient_var.get(), "helix": self.helix_var.get(),
+                        "c_dis": self.c_dis_var.get()},
+            "output": self.output_text.get("1.0", "end-1c"),
+        }
+
+    def save_project(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=project_files.FILETYPES,
+                                            title="Save Project")
+        if path:
+            self.save_project_to(path)
+
+    def save_project_to(self, path):
+        try:
+            project_files.save_project(path, "cylinder", self.project_data())
+        except OSError as ex:
+            messagebox.showerror("Save Project", "Could not save the project:\n%s" % ex)
+            return False
+        return True
+
+    def open_project(self):
+        path = filedialog.askopenfilename(filetypes=project_files.FILETYPES, title="Open Project")
+        if path:
+            self.open_project_from(path)
+
+    def open_project_from(self, path):
+        """Restore the inputs, regenerate, and keep the SAVED output if it differs from what
+        this version generates (hand edits or a program change). Returns True if loaded."""
+        try:
+            data = project_files.load_project(path, "cylinder")
+        except project_files.ProjectError as ex:
+            messagebox.showerror("Open Project", str(ex))
+            return False
+        for key, value in data.get("inputs", {}).items():
+            if key in self.vars:
+                self.vars[key].set(str(value))
+        opts = data.get("options", {})
+        self.auto_orient_var.set(bool(opts.get("auto_orient", True)))
+        self.helix_var.set(bool(opts.get("helix", False)))
+        self.c_dis_var.set(bool(opts.get("c_dis", True)))
+        saved = data.get("output", "")
+        self.clear()
+        if saved.strip():
+            regenerated = self.generate() and self.output_text.get("1.0", "end-1c") == saved
+            if not regenerated:
+                self.output_text.delete("1.0", tk.END)
+                self.output_text.insert("1.0", saved)
+                self.redraw()
+                self.info.config(text="Output as saved in the project (not regenerated).")
+                messagebox.showinfo("Open Project",
+                                    "The saved output differs from what this version generates "
+                                    "(hand edits, or a program change).\n\nThe SAVED output was kept. "
+                                    "Press Generate to regenerate it from the inputs.")
+        warning = project_files.profile_mismatch(data)
+        if warning:
+            messagebox.showwarning("Open Project", warning)
         return True
 
     # ------------------------------------------------------------------ top view

@@ -35,6 +35,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
 | `krl_export.py` | Shared `.src` export (no tkinter): header, `ExportSettings` profiles (built-in `NOUVTETE`; JSON load/save, `active_settings`), `add_c_dis`, rounding, DEF-name check, `build_program`. Used by App6 and App7 (App5 not yet). |
 | `export_profiles.json` | The export profiles (active + named profiles). Edited through the Export Settings dialog. Currently only "NouvTete". |
+| `project_files.py` | Project files (`.json`, no tkinter): `save_project`, `load_project` (checks app and format), `profile_mismatch`. Format 1: `format`, `app` ("cuboid"/"cylinder"), `saved`, `export_profile` (copy), plus the app's own keys. |
 | `export_settings_dialog.py` | Export Settings dialog (TOOL/BASE, motion values, decimals, header comments; Save / Save as New / Delete), shared by both apps. |
 | `path_model.py` | Path model (no tkinter): `Pose`, `Ptp`/`Lin`/`Circ`/`Comment`/`Raw` items with `to_krl()`; `fmt()` = the ONE number formatter; `parse_krl` (text → items, exact round trip for all app output, unknown lines kept as `Raw`, case-insensitive); `path_3d` (items → 3D polylines with layer/transition flags) and `path_length`. |
 | `shapes.py` | Shape geometry (no tkinter): `rounded_rect_base`, `auto_corner_radius`, and the generic turn offset `offset_loop` (outward normals from the geometry; any order or direction). The cylinder/circle base goes here next. |
@@ -226,5 +227,18 @@ Minor:
     - Largest kink at a flat join after rounding: 0.02° (20×20 shape), typically < 0.007°.
     - Full precision could also print `1e-07`-style numbers, which KRL may not accept; rounding avoids that.
     - `export_profiles.json` created from the built-in.
-  - Next: step 3, JSON project files.
+  - Committed as ba8aee2.
+  - Step 3 done: project files.
+    - App6: Functions menu "Open Project... / Save Project..." (Ctrl+Shift+O / Ctrl+Shift+S; not Ctrl+O, because Tk's Text widget inserts a new line on Ctrl+O). App7: buttons.
+    - App6 project keys: `base` (points, points_circ, motion_commands, orientations), `base_params` (Auto-Generate Xr/Yr/Zr/L/W/Th/r/r_auto, or null if the base was made or changed by hand), `generate_popup` (the popup pre-fill), `entries` (X..C, E, W, turns, layers, tilt), `options` (auto_orient, c_dis), `current_a_angle`, `output`.
+    - App7 project keys: `inputs`, `options` (auto_orient, helix, c_dis), `output`.
+    - Open: restores everything, then regenerates (App6: Automate, if the saved output has LAYER comments and E/W/turns/layers are filled; App7: Generate). If the result differs from the SAVED output (hand edits or a program change), the saved output is kept and a notice is shown. A profile mismatch gives a warning; the active profile is still used for export. A wrong app, damaged JSON or a newer format is refused with an error and nothing changes.
+    - In App6, Open plus its Automate is ONE undo step: the extra snapshot pushed by Automate is popped.
+    - New App6 state: `base_params` (included in the undo snapshot, reset by clear_all, Add Point, the CIRC popup, Import and Change Center) and `generate_popup_values` (the Auto-Generate popup now remembers the last values).
+    - `check_projects` in the regression covers both apps: reopen gives an identical output and `.src`, hand edits are kept with a notice, the profile warning, damaged and wrong-app files are refused cleanly, undo after open, a base-only project, and restored parameters and fields. ALL IDENTICAL.
+  - Owner's lab test found an issue: Open Project (automated) → Undo → Redo restored the output and the values, but the canvas showed only the 11 base points.
+    - Cause: `_restore_state` always called `visualize_cuboid()` (base only); the automated turns are drawn only while Automate runs. The same happened for Automate → Clear All → Undo.
+    - Fix: `draw_output_path()` draws the path from the OUTPUT TEXT the way Automate does (blue moves with labels and red dots, purple transitions with a purple via dot). `redraw_canvas_from_state()` uses it when the output has `===== LAYER` comments, otherwise `visualize_cuboid()`. Used by `_restore_state` (undo/redo) and by Open Project (also when the saved output is kept).
+    - Verified with a geometric comparison of the canvas (each shape's start/mid/end in mm, so the 30 vs 31 arc sample points caused by float noise don't matter): Redo and Clear+Undo are identical to the live Automate drawing in 4 cases. The regression now checks Open, Undo (empty canvas), Redo, and Clear All + Undo against the live drawing (`_canvas_moves`/`_same_drawing`, 0.05 mm tolerance); with the old behaviour put back temporarily it fails as expected. Screenshot confirmed.
+  - Next: step 4, A arrows in the 3D view.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

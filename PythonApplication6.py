@@ -13,6 +13,7 @@ import path_model as pm   # move types, KRL line formatting/parsing, 3D geometry
 import shapes            # base loops (rounded rectangle) and the turn offset
 import view3d            # 3D view window (shared)
 import export_settings_dialog   # export profiles (TOOL/BASE/speeds/decimals) dialog
+import project_files     # save / open all inputs of a print (.json)
 
 # Variables to store the points
 points = []
@@ -52,6 +53,11 @@ _label_offsets = {}          # canvas text id -> (ox, oy) pixel offset from its 
 # Global variable to track A-axis orientation for smooth transitions
 current_a_angle = 180.0   # Current A angle
 
+# Auto-Generate parameters of the current base (None if the base was made or changed by hand)
+base_params = None
+# Last values typed into the Auto-Generate popup (pre-fill); a project restores them too
+generate_popup_values = {"Xr": "535", "Yr": "10", "Zr": "65", "L": "", "W": "", "Th": "", "r": ""}
+
 # Undo history (bounded)
 UNDO_HISTORY_LIMIT = 10
 undo_history = []  # list of snapshots (bounded)
@@ -65,12 +71,14 @@ def _snapshot_state():
         'motion_commands': copy.deepcopy(motion_commands),
         'orientations': copy.deepcopy(orientations),
         'current_a_angle': current_a_angle,
+        'base_params': copy.deepcopy(base_params),
         'output_text': output_text.get("1.0", "end-1c")
     }
 
 def _restore_state(snap):
-    global points, points_circ, motion_commands, orientations, current_a_angle
+    global points, points_circ, motion_commands, orientations, current_a_angle, base_params
     points = copy.deepcopy(snap['points'])
+    base_params = copy.deepcopy(snap.get('base_params'))
     points_circ = copy.deepcopy(snap['points_circ'])
     motion_commands = copy.deepcopy(snap['motion_commands'])
     orientations = copy.deepcopy(snap['orientations'])
@@ -79,8 +87,8 @@ def _restore_state(snap):
     reset_view_zoom()
     output_text.delete("1.0", tk.END)
     output_text.insert(tk.END, snap['output_text'])
-    if points:
-        visualize_cuboid()
+    # Redraw what the restored output contains (the automated turns too, not only the base)
+    redraw_canvas_from_state()
 
 def _push_undo_snapshot():
     # Keep last 3 states
@@ -489,6 +497,48 @@ def visualize_cuboid():
     # Show the whole drawing inside the (fixed-size) canvas
     fit_view()
 
+def draw_output_path():
+    """Draw the path written in the output text (all turns, layers and transitions) the way
+    Automate draws it: moves in blue with labels and red point dots, transitions in purple
+    with a purple via dot. Used when a state is restored (undo/redo, Open Project), because
+    the automated drawing is otherwise only made while Automate runs."""
+    canvas.delete("all")
+    reset_view_zoom()
+    update_scroll_region()
+    items = pm.parse_krl(output_text.get("1.0", tk.END))
+    _, moves3d = pm.path_3d(items)               # same move order, with the transition flags
+    pos, k = None, 0
+    for item in items:
+        if isinstance(item, pm.Ptp):
+            pos = item.target.xyz
+            continue
+        if not isinstance(item, (pm.Lin, pm.Circ)) or pos is None:
+            continue
+        transition = moves3d[k]['transition']
+        k += 1
+        end = item.target.xyz
+        color = "purple" if transition else "blue"
+        if isinstance(item, pm.Lin):
+            draw_line(pos[0], pos[1], end[0], end[1], "LIN", color=color)
+        else:
+            via = item.via.xyz
+            draw_arc(pos[0], pos[1], via[0], via[1], end[0], end[1], "CIRC", color=color)
+            if transition:
+                draw_point(via[0], via[1], "purple")
+        if not transition:
+            for q in ((pos, end) if isinstance(item, pm.Lin) else (pos, item.via.xyz, end)):
+                draw_point(q[0], q[1])
+        pos = end
+    fit_view()
+
+def redraw_canvas_from_state():
+    """Canvas for the current state: the automated path from the output text if there is one,
+    otherwise the base loop (preview / manual mode)."""
+    if "===== LAYER" in output_text.get("1.0", tk.END):
+        draw_output_path()
+    elif points:
+        visualize_cuboid()
+
 def add_point():
     global points, motion_commands
     # Take snapshot only if inputs are valid; will push after validation
@@ -510,6 +560,8 @@ def add_point():
 
     # Snapshot before mutating state
     _push_undo_snapshot()
+    global base_params
+    base_params = None          # the base is now made / changed by hand
     x = float(x_str)
     y = float(y_str)
     z = float(z_str)
@@ -607,6 +659,8 @@ def input_points_for_circ():
     def ok_click():
         # Snapshot prior to applying changes
         _push_undo_snapshot()
+        global base_params
+        base_params = None          # the base is changed by hand
         # Get the input values
         middle_x = middle_x_entry.get()
         middle_y = middle_y_entry.get()
@@ -1127,8 +1181,9 @@ def clear_for_auto():
     output_text.delete("1.0", tk.END)
 
 def clear_all():
-    global points, points_circ, motion_commands, orientations, current_a_angle
+    global points, points_circ, motion_commands, orientations, current_a_angle, base_params
     _push_undo_snapshot()
+    base_params = None
     points = []
     points_circ = []
     motion_commands = []
@@ -1165,6 +1220,8 @@ def change_center():
         global xc, yc, zc
         # Snapshot prior to applying changes
         _push_undo_snapshot()
+        global base_params
+        base_params = None          # moved base: the parameters no longer match
         # Get the input values
         xc_str = xc_entry.get()
         yc_str = yc_entry.get()
@@ -1253,6 +1310,8 @@ def import_points():
     if file_path:
         try:
             _push_undo_snapshot()
+            global base_params
+            base_params = None          # imported base: no Auto-Generate parameters
             points_from_file, points_circ_from_file, orientations_from_file, motion_commands_from_file = read_points_from_file(file_path)
             # Update the global variables with the imported points
             global points, points_circ, orientations, motion_commands
@@ -1448,15 +1507,15 @@ def open_generate_popup():
     # Labels & entries
     tk.Label(popup, text="Center Xr:").grid(row=0, column=0, padx=20)
     xr_entry = tk.Entry(popup); xr_entry.grid(row=0, column=1, padx=50, pady=30)
-    xr_entry.insert(0, "535")  # default value - adjusted for coordinate shift (+23)
+    xr_entry.insert(0, generate_popup_values["Xr"])
 
     tk.Label(popup, text="Center Yr:").grid(row=1, column=0, padx=20)
     yr_entry = tk.Entry(popup); yr_entry.grid(row=1, column=1, padx=50, pady=30)
-    yr_entry.insert(0, "10")  # default value - adjusted for coordinate shift (+153)
+    yr_entry.insert(0, generate_popup_values["Yr"])
 
     tk.Label(popup, text="Center Zr:").grid(row=2, column=0, padx=20)
     zr_entry = tk.Entry(popup); zr_entry.grid(row=2, column=1, padx=50, pady=30)
-    zr_entry.insert(0, "65")  # Comfortable working height relative to optimized base
+    zr_entry.insert(0, generate_popup_values["Zr"])
 
     tk.Label(popup, text="Cuboid Length (X):").grid(row=3, column=0, padx=20)
     length_entry = tk.Entry(popup); length_entry.grid(row=3, column=1, padx=50, pady=30)
@@ -1469,9 +1528,12 @@ def open_generate_popup():
 
     tk.Label(popup, text="Corner Radius (blank = auto):").grid(row=6, column=0, padx=20)
     radius_entry = tk.Entry(popup); radius_entry.grid(row=6, column=1, padx=50, pady=30)
+    # Pre-fill with the last values used (or the ones from an opened project)
+    for entry, key in ((length_entry, "L"), (width_entry, "W"), (th_entry, "Th"), (radius_entry, "r")):
+        entry.insert(0, generate_popup_values[key])
 
     def generate_points():
-        global points, points_circ, motion_commands, orientations
+        global points, points_circ, motion_commands, orientations, base_params
         try:
             Xr = float(xr_entry.get())
             Yr = float(yr_entry.get())
@@ -1506,6 +1568,11 @@ def open_generate_popup():
         clear_all()
         points, points_circ, motion_commands = shapes.rounded_rect_base(Xr, Yr, Z, L, W, r)
         orientations = [(A, B, C)] * (len(points) + len(points_circ))
+        base_params = {"Xr": Xr, "Yr": Yr, "Zr": Zr, "L": L, "W": W, "Th": Th, "r": r,
+                       "r_auto": not r_text}
+        generate_popup_values.update({"Xr": xr_entry.get(), "Yr": yr_entry.get(), "Zr": zr_entry.get(),
+                                      "L": length_entry.get(), "W": width_entry.get(),
+                                      "Th": th_entry.get(), "r": r_text})
 
         # Preview: PTP P1, then the base moves in order (LIN / CIRC)
         emit_ptp(points[0], (A, B, C))
@@ -1565,6 +1632,107 @@ def open_3d_view(event=None):
 
 root = tk.Tk()
 root.title("Cuboidal KRL Code Generator")
+
+# =====================================================================================
+# PROJECT FILES (project_files.py): all inputs + the output, to reproduce a print
+# =====================================================================================
+def _project_entries():
+    return {"X": x_entry, "Y": y_entry, "Z": z_entry, "A": a_entry, "B": b_entry, "C": c_entry,
+            "E": E_entry, "W": W_entry, "turns": NumberofTurns_entry, "layers": NumberofLayers_entry,
+            "tilt": tilt_entry}
+
+def project_data():
+    return {
+        "base": {"points": [list(p) for p in points], "points_circ": [list(p) for p in points_circ],
+                 "motion_commands": list(motion_commands), "orientations": [list(o) for o in orientations]},
+        "base_params": copy.deepcopy(base_params),
+        "generate_popup": dict(generate_popup_values),
+        "entries": {k: e.get() for k, e in _project_entries().items()},
+        "options": {"auto_orient": tilt_along_travel_var.get(), "c_dis": c_dis_var.get()},
+        "current_a_angle": current_a_angle,
+        "output": output_text.get("1.0", "end-1c"),
+    }
+
+def save_project(event=None):
+    path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=project_files.FILETYPES,
+                                        title="Save Project")
+    if path:
+        save_project_to(path)
+
+def save_project_to(path):
+    try:
+        project_files.save_project(path, "cuboid", project_data())
+    except OSError as ex:
+        messagebox.showerror("Save Project", f"Could not save the project:\n{ex}")
+        return False
+    return True
+
+def open_project(event=None):
+    path = filedialog.askopenfilename(filetypes=project_files.FILETYPES, title="Open Project")
+    if path:
+        open_project_from(path)
+
+def open_project_from(path):
+    """Restore base, parameters, fields and options. If the project was automated, Automate
+    runs again; if its result differs from the SAVED output (hand edits or a program change),
+    the saved output is kept. Undo returns to the state before opening."""
+    global points, points_circ, motion_commands, orientations, current_a_angle, base_params
+    try:
+        data = project_files.load_project(path, "cuboid")
+        base = data.get("base", {})
+        new_points = [tuple(float(v) for v in p) for p in base.get("points", [])]
+        new_circ = [tuple(float(v) for v in p) for p in base.get("points_circ", [])]
+        new_mc = [str(m) for m in base.get("motion_commands", [])]
+        new_ori = [tuple(float(v) for v in o) for o in base.get("orientations", [])]
+        if any(m not in ("LIN", "CIRC") for m in new_mc) or \
+                (new_points and len(new_points) != 1 + new_mc.count("LIN")) or \
+                len(new_circ) != 2 * new_mc.count("CIRC") or any(len(p) != 3 for p in new_points + new_circ):
+            raise project_files.ProjectError("The base loop in the project file is inconsistent.")
+    except project_files.ProjectError as ex:
+        messagebox.showerror("Open Project", str(ex))
+        return False
+    except (TypeError, ValueError) as ex:
+        messagebox.showerror("Open Project", f"The project file is damaged:\n{ex}")
+        return False
+
+    _push_undo_snapshot()
+    points, points_circ, motion_commands, orientations = new_points, new_circ, new_mc, new_ori
+    current_a_angle = float(data.get("current_a_angle", 180.0))
+    base_params = data.get("base_params")
+    generate_popup_values.update({k: str(v) for k, v in data.get("generate_popup", {}).items()
+                                  if k in generate_popup_values})
+    for key, entry in _project_entries().items():
+        if key in data.get("entries", {}):
+            entry.delete(0, tk.END)
+            entry.insert(0, str(data["entries"][key]))
+    opts = data.get("options", {})
+    tilt_along_travel_var.set(bool(opts.get("auto_orient", True)))
+    c_dis_var.set(bool(opts.get("c_dis", True)))
+
+    saved = data.get("output", "")
+    canvas.delete("all")
+    reset_view_zoom()
+    output_text.delete("1.0", tk.END)
+    output_text.insert("1.0", saved)
+    redraw_canvas_from_state()
+    entries = data.get("entries", {})
+    if "===== LAYER" in saved and all(str(entries.get(k, "")).strip() for k in ("E", "W", "turns", "layers")):
+        last_snapshot = undo_history[-1] if undo_history else None
+        automate()                      # regenerates the turns and draws them
+        if undo_history and undo_history[-1] is not last_snapshot:
+            undo_history.pop()          # Open + regeneration = ONE undo step
+        if output_text.get("1.0", "end-1c") != saved:
+            output_text.delete("1.0", tk.END)
+            output_text.insert("1.0", saved)
+            draw_output_path()          # the canvas must show the SAVED path, not the regenerated one
+            messagebox.showinfo("Open Project",
+                                "The saved output differs from what this version generates "
+                                "(hand edits, or a program change).\n\nThe SAVED output was kept. "
+                                "Press Automate to regenerate it from the inputs.")
+    warning = project_files.profile_mismatch(data)
+    if warning:
+        messagebox.showwarning("Open Project", warning)
+    return True
 
 def go_back_to_selector():
     try:
@@ -1692,6 +1860,9 @@ functions_menu.add_command(label="Fit Canvas to Drawing\t (double-click canvas)"
 functions_menu.add_separator()
 functions_menu.add_command(label="3D View\t (Ctrl+Shift+D)", command=open_3d_view)
 functions_menu.add_separator()
+functions_menu.add_command(label="Open Project...\t (Ctrl+Shift+O)", command=open_project)
+functions_menu.add_command(label="Save Project...\t (Ctrl+Shift+S)", command=save_project)
+functions_menu.add_separator()
 functions_menu.add_command(label="Export Settings (TOOL/BASE profiles)...",
                            command=lambda: export_settings_dialog.open_dialog(root))
 
@@ -1709,6 +1880,8 @@ root.bind_all("<Control-Shift-A>", lambda e: open_approach_popup())
 root.bind_all("<Control-Shift-C>", lambda e: change_center())
 root.bind_all("<Control-Shift-G>", lambda e: open_generate_popup())
 root.bind_all("<Control-Shift-D>", open_3d_view)
+root.bind_all("<Control-Shift-O>", open_project)
+root.bind_all("<Control-Shift-S>", save_project)
 
 ## Remove inline help notebook; we will use top-level Help tab
 

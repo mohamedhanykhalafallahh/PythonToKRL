@@ -431,6 +431,174 @@ def check_profiles(tmpdir):
     return bad
 
 
+def _new_app6():
+    tk.Tk.mainloop = lambda self, n=0: None
+    with contextlib.redirect_stdout(io.StringIO()):
+        g = runpy.run_path(APP, run_name="__app__")
+    G = g["automate"].__globals__
+    G["root"].withdraw()
+    return G
+
+
+def _canvas_moves(G):
+    """App6 canvas content in mm: lines as (colour, start, end), dots as (colour, centre)."""
+    c = G["canvas"]
+    s = G["scaling_factor"] * G["view_zoom"]
+    out = []
+    for i in c.find_all():
+        co = c.coords(i)
+        if c.type(i) == "line":
+            out.append((c.itemcget(i, "fill"), co[0] / s, -co[1] / s, co[-2] / s, -co[-1] / s))
+        elif c.type(i) == "oval":
+            out.append((c.itemcget(i, "fill"), (co[0] + co[2]) / 2 / s, -(co[1] + co[3]) / 2 / s))
+    return out
+
+
+def _same_drawing(a, b, tol=0.05):
+    """True if every shape of a has a partner in b and vice versa (same colour, points within tol mm)."""
+    def covered(x, y):
+        return all(any(p[0] == q[0] and len(p) == len(q) and max(abs(u - v) for u, v in zip(p[1:], q[1:])) <= tol
+                       for q in y) for p in x)
+    return covered(a, b) and covered(b, a)
+
+
+def check_projects(tmpdir):
+    """Project files in both apps: save -> open in a fresh app gives the same output and the
+    same .src; hand edits are kept (with a notice); wrong app / damaged files are refused
+    without changing anything; a different export profile gives a warning; undo after open."""
+    import json
+    bad = []
+    msgs = []
+    messagebox.showinfo = lambda *a, **k: msgs.append(("info", a[1] if len(a) > 1 else ""))
+    messagebox.showwarning = lambda *a, **k: msgs.append(("warning", a[1] if len(a) > 1 else ""))
+    messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
+    kinds = lambda: [m[0] for m in msgs]
+
+    # ---------------- cylinder app ----------------
+    import PythonApplication7 as app7
+    root = tk.Tk(); root.withdraw()
+    try:
+        a = app7.CylinderApp(root)
+        for k, v in dict(step="3", turns="5", layers="3", layer_height="1", b="-3").items():
+            a.vars[k].set(v)
+        a.helix_var.set(False); a.c_dis_var.set(False)
+        a.generate()
+        p1 = os.path.join(tmpdir, "cyl_project.json")
+        a.save_project_to(p1)
+        a.export_to(os.path.join(tmpdir, "CYL_A.src"))
+        b = app7.CylinderApp(tk.Toplevel(root))
+        msgs.clear()
+        if not b.open_project_from(p1) or kinds():
+            bad.append("cylinder: open gave messages %s" % msgs)
+        if b.output_text.get("1.0", "end-1c") != a.output_text.get("1.0", "end-1c") or \
+                {k: v.get() for k, v in b.vars.items()} != {k: v.get() for k, v in a.vars.items()} or \
+                b.c_dis_var.get() is not False:
+            bad.append("cylinder: reopened project differs")
+        b.export_to(os.path.join(tmpdir, "CYL_B.src"))
+        if open(os.path.join(tmpdir, "CYL_A.src")).read().replace("CYL_A", "X") != \
+                open(os.path.join(tmpdir, "CYL_B.src")).read().replace("CYL_B", "X"):
+            bad.append("cylinder: export after reopening differs")
+        # hand edit is kept
+        a.output_text.insert("3.0", "; my hand-written note\n")
+        p2 = os.path.join(tmpdir, "cyl_project_edited.json")
+        a.save_project_to(p2)
+        msgs.clear()
+        b.open_project_from(p2)
+        if "; my hand-written note" not in b.output_text.get("1.0", tk.END) or kinds() != ["info"]:
+            bad.append("cylinder: hand-edited output not kept / no notice (%s)" % msgs)
+        # different export profile -> warning
+        data = json.load(open(p1))
+        data["export_profile"]["tool"][0] = 99.0
+        p3 = os.path.join(tmpdir, "cyl_project_profile.json")
+        json.dump(data, open(p3, "w"))
+        msgs.clear()
+        b.open_project_from(p3)
+        if kinds() != ["warning"] or "TOOL" not in msgs[0][1] and "tool" not in msgs[0][1]:
+            bad.append("cylinder: no profile warning (%s)" % msgs)
+        # damaged file / wrong app: refused, nothing changed
+        before = b.output_text.get("1.0", tk.END)
+        p4 = os.path.join(tmpdir, "damaged.json")
+        open(p4, "w").write("{ not json")
+        for path in (p4,):
+            msgs.clear()
+            if b.open_project_from(path) or kinds() != ["error"] or b.output_text.get("1.0", tk.END) != before:
+                bad.append("cylinder: damaged file not refused cleanly")
+    finally:
+        root.destroy()
+
+    # ---------------- cuboid app ----------------
+    G = _new_app6()
+    try:
+        before = set(G["root"].winfo_children())
+        G["open_generate_popup"]()
+        pop = [w for w in G["root"].winfo_children() if w not in before][0]
+        ents = sorted([w for w in pop.winfo_children() if isinstance(w, tk.Entry)], key=lambda w: int(w.grid_info()["row"]))
+        for e, v in zip(ents, (500, 20, 60, 250, 120, 0, 30)):
+            _set(e, v)
+        [w for w in pop.winfo_children() if isinstance(w, tk.Button)][0].invoke()
+        base_preview = G["output_text"].get("1.0", "end-1c")
+        p5 = os.path.join(tmpdir, "cub_base_only.json")
+        G["save_project_to"](p5)
+        for name, v in (("E_entry", 2), ("W_entry", 1.5), ("NumberofTurns_entry", 3), ("NumberofLayers_entry", 1)):
+            _set(G[name], v)
+        _set(G["tilt_entry"], 15)
+        with contextlib.redirect_stdout(io.StringIO()):
+            G["automate"]()
+        out_a = G["output_text"].get("1.0", "end-1c")
+        drawing_a = _canvas_moves(G)
+        p6 = os.path.join(tmpdir, "cub_project.json")
+        G["save_project_to"](p6)
+        # Clear All -> Undo must bring back the whole automated drawing, not only the base
+        G["clear_all"]()
+        G["undo_action"]()
+        if not _same_drawing(_canvas_moves(G), drawing_a):
+            bad.append("cuboid: canvas after Clear All + Undo is not the automated drawing")
+        G["output_text"].insert("2.0", "; approach / note added by hand\n")
+        p7 = os.path.join(tmpdir, "cub_project_edited.json")
+        G["save_project_to"](p7)
+        points_a = list(G["points"])
+    finally:
+        G["root"].destroy()
+
+    G = _new_app6()
+    try:
+        msgs.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            ok = G["open_project_from"](p6)
+        if not ok or kinds() or G["output_text"].get("1.0", "end-1c") != out_a:
+            bad.append("cuboid: reopened automated project differs or gave messages (%s)" % msgs)
+        if [tuple(p) for p in G["points"]] != [tuple(p) for p in points_a] or \
+                G["base_params"] is None or G["base_params"]["r"] != 30.0 or G["tilt_entry"].get() != "15" or \
+                G["generate_popup_values"]["L"] != "250":
+            bad.append("cuboid: base / parameters / fields not restored")
+        if not _same_drawing(_canvas_moves(G), drawing_a):
+            bad.append("cuboid: canvas after Open Project is not the automated drawing")
+        G["undo_action"]()
+        if G["points"] or G["output_text"].get("1.0", "end-1c").strip() or G["canvas"].find_all():
+            bad.append("cuboid: undo after open did not return to the empty state")
+        G["redo_action"]()       # the reported problem: Redo showed only the 11 base points
+        if G["output_text"].get("1.0", "end-1c") != out_a or not _same_drawing(_canvas_moves(G), drawing_a):
+            bad.append("cuboid: Redo after Undo of Open does not restore the automated drawing")
+        G["undo_action"]()
+        msgs.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            G["open_project_from"](p7)
+        if "; approach / note added by hand" not in G["output_text"].get("1.0", tk.END) or kinds() != ["info"]:
+            bad.append("cuboid: hand-edited output not kept / no notice (%s)" % msgs)
+        msgs.clear()
+        G["open_project_from"](p5)
+        if G["output_text"].get("1.0", "end-1c") != base_preview or kinds():
+            bad.append("cuboid: base-only project not restored as saved")
+        before = G["output_text"].get("1.0", tk.END)
+        msgs.clear()
+        if G["open_project_from"](os.path.join(tmpdir, "cyl_project.json")) or kinds() != ["error"] or \
+                "Cylinder" not in msgs[0][1] or G["output_text"].get("1.0", tk.END) != before:
+            bad.append("cuboid: cylinder project not refused cleanly (%s)" % msgs)
+    finally:
+        G["root"].destroy()
+    return bad
+
+
 def check_invalid_name_not_saved(tmpdir):
     """Exporting to an invalid KRL name must show an error and write nothing."""
     errors = []
@@ -507,6 +675,7 @@ def main():
                              ("shapes offset (CCW + CW, exact sides and radii)", check_shapes),
                              ("cylinder geometry (tangent, radii, counts, A, Z)", check_cylinder),
                              ("export profiles + settings dialog", lambda: check_profiles(tmpdir)),
+                             ("project files (both apps)", lambda: check_projects(tmpdir)),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:
