@@ -2,7 +2,7 @@
 
 File layout (one JSON object):
     format          FORMAT (int), for future changes of the layout
-    app             "cuboid" (App6) or "cylinder" (App7)
+    app             "main" (KRL_Generator), "cuboid" (App6) or "cylinder" (App7)
     saved           local time of saving (ISO, informational)
     export_profile  copy of the export profile active when saving (name + values, informational)
     ...             the app's own keys (inputs, options, base loop, output text, ...)
@@ -19,7 +19,8 @@ import krl_export
 
 FORMAT = 1
 FILETYPES = [("Project files", "*.json"), ("All files", "*.*")]
-APP_NAMES = {"cuboid": "Cuboid (PythonApplication6)", "cylinder": "Cylinder (PythonApplication7)"}
+APP_NAMES = {"cuboid": "Cuboid (PythonApplication6)", "cylinder": "Cylinder (PythonApplication7)",
+             "main": "KRL Generator (main app)"}
 
 
 class ProjectError(Exception):

@@ -463,6 +463,152 @@ def check_cuboid_params():
     return bad
 
 
+def _new_main_app():
+    import KRL_Generator
+    root = tk.Tk()
+    root.withdraw()
+    return root, KRL_Generator.MainApp(root)
+
+
+def run_main_case(app, shape, fields, common, opts, tmpdir, name):
+    """Fill the main app like a user, Generate, export; returns the .src text."""
+    app.set_shape(shape)
+    for k, v in fields.items():
+        app.shape_vars[shape][k].set(str(v))
+    for k, v in common.items():
+        app.vars[k].set(str(v))
+    app.auto_orient_var.set(opts.get("orient", True))
+    app.helix_var.set(opts.get("helix", False))
+    app.c_dis_var.set(opts.get("cdis", True))
+    if not app.generate():
+        raise AppError("main app: Generate failed")
+    path = os.path.join(tmpdir, name + ".src")
+    if not app.export_to(path):
+        raise AppError("main app: export failed")
+    return open(path).read()
+
+
+def check_main_app(tmpdir):
+    """The all-in-one app: produces exactly the App6 (auto-orient) and App7 goldens from the
+    same inputs (App6's N+1 entered as N), and its own functions work: shape switching keeps
+    the values, undo/redo, comment / approach at the cursor, projects, input errors."""
+    import json
+    bad = []
+    msgs = []
+    messagebox.showinfo = lambda *a, **k: msgs.append(("info", a[1] if len(a) > 1 else ""))
+    messagebox.showwarning = lambda *a, **k: msgs.append(("warning", a[1] if len(a) > 1 else ""))
+    messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
+    root, app = _new_main_app()
+    try:
+        # ---- same output as the old apps
+        for name, case in CASES.items():
+            if not case["orient"]:
+                continue
+            Xr, Yr, Zr, L, W, Th = case["base"][:6]
+            r = case["base"][6] if len(case["base"]) > 6 else ""
+            E, H, turns, layers = case["auto"]
+            fields = dict(xc=Xr, yc=Yr, z0=float(Zr) + float(Th), length=L, width=W, corner_radius=r)
+            common = dict(step=E, layer_height=H, turns=turns + 1, layers=layers + 1, a=180,
+                          b=max(5.0, min(float(case["tilt"]), 20.0)), c=180)
+            src = run_main_case(app, "cuboid", fields, common, dict(cdis=case["cdis"]), tmpdir, name)
+            if src != open(os.path.join(GOLDEN, name + ".src")).read():
+                bad.append("main app cuboid %s differs from the App6 golden" % name)
+        defaults = {k: d for k, _, d in [("a", "", "180"), ("b", "", "20"), ("c", "", "180")]}
+        for name, case in CYL_CASES.items():
+            f = dict(case["fields"])
+            fields = {k: f.pop(k) for k in ("xc", "yc", "z0", "inner_diameter") if k in f}
+            fields = dict(dict(xc="535", yc="10", z0="65", inner_diameter="100"), **fields)
+            common = dict(dict(step="2", layer_height="2", turns="3", layers="2", **defaults), **f)
+            src = run_main_case(app, "cylinder", fields, common,
+                                dict(orient=case["orient"], helix=case["helix"], cdis=case["cdis"]), tmpdir, name)
+            if src != open(os.path.join(GOLDEN, name + ".src")).read():
+                bad.append("main app cylinder %s differs from the App7 golden" % name)
+        if any(m[0] == "error" for m in msgs):
+            bad.append("main app: errors while reproducing the goldens: %s" % [m for m in msgs if m[0] == "error"])
+
+        # ---- shape switching keeps each shape's values; helix only for the cylinder
+        app.set_shape("cuboid"); app.shape_vars["cuboid"]["length"].set("222")
+        app.set_shape("cylinder"); app.shape_vars["cylinder"]["inner_diameter"].set("123")
+        helix_shown = app.helix_check.winfo_manager() != ""
+        app.set_shape("cuboid")
+        if app.shape_vars["cuboid"]["length"].get() != "222" or app.shape_vars["cylinder"]["inner_diameter"].get() != "123" \
+                or not helix_shown or app.helix_check.winfo_manager() != "":
+            bad.append("main app: shape switching lost values or shows the wrong options")
+
+        # ---- undo / redo
+        app.undo_stack.clear(); app.redo_stack.clear()
+        app.output_text.delete("1.0", tk.END)
+        app.vars["turns"].set("2"); app.vars["layers"].set("1")
+        app.generate()
+        gen_text = app.output_text.get("1.0", "end-1c")
+        app.clear()
+        app.undo()
+        if app.output_text.get("1.0", "end-1c") != gen_text or not app.canvas.find_all():
+            bad.append("main app: undo of Clear did not restore output + top view")
+        app.undo()
+        if app.output_text.get("1.0", "end-1c").strip():
+            bad.append("main app: undo of Generate did not restore the empty output")
+        app.redo(); app.redo()
+        if app.output_text.get("1.0", "end-1c").strip():
+            bad.append("main app: redo did not re-apply Clear")
+        app.undo()
+
+        # ---- comment and approach at the cursor (undoable)
+        app.output_text.mark_set("insert", "2.0")
+        win = app.add_comment(); win.children[[k for k in win.children if "entry" in k][0]].insert(0, "my note")
+        win.children[[k for k in win.children if "button" in k][0]].invoke()
+        if app.output_text.get("2.0", "2.end") != "; my note":
+            bad.append("main app: comment not inserted at the cursor line (%r)" % app.output_text.get("2.0", "2.end"))
+        app.output_text.mark_set("insert", "1.0")
+        win = app.add_approach()
+        for k, v in zip("XYZ", (500, 0, 150)):
+            win.vars[k].set(str(v))
+        win.ok()
+        abc = tuple(float(app.vars[k].get()) for k in "abc")      # pre-filled from the Orientation fields
+        if app.output_text.get("1.0", "1.end") != "PTP {X 500.0, Y 0.0, Z 150.0, A %s, B %s, C %s, S 2., T 43.}" % abc:
+            bad.append("main app: approach PTP wrong: %r" % app.output_text.get("1.0", "1.end"))
+        app.undo(); app.undo()
+        if app.output_text.get("1.0", "end-1c") != gen_text:
+            bad.append("main app: undo of comment + approach failed")
+
+        # ---- projects: own format round trip, hand edit kept, wrong app refused
+        p = os.path.join(tmpdir, "main_project.json")
+        app.save_project_to(p)
+        root2, app2 = tk.Toplevel(root), None
+        import KRL_Generator
+        app2 = KRL_Generator.MainApp(root2)
+        msgs.clear()
+        app2.open_project_from(p)
+        if app2.state() != app.state() or msgs:
+            bad.append("main app: project round trip differs or gave messages (%s)" % msgs)
+        app.output_text.insert("1.0", "; edited by hand\n")
+        p2 = os.path.join(tmpdir, "main_project_edited.json")
+        app.save_project_to(p2)
+        msgs.clear()
+        app2.open_project_from(p2)
+        if not app2.output_text.get("1.0", "1.end").startswith("; edited by hand") or [m[0] for m in msgs] != ["info"]:
+            bad.append("main app: hand-edited project output not kept / no notice")
+        msgs.clear()
+        before = app2.state()
+        if app2.open_project_from(os.path.join(tmpdir, "cyl_project.json")) or app2.state() != before \
+                or [m[0] for m in msgs] != ["error"]:
+            bad.append("main app: old cylinder project was not refused cleanly (5c will open it)")
+
+        # ---- input errors leave everything unchanged
+        before = app.state()
+        for key, value in (("turns", "2.5"), ("step", "abc"), ("layers", "0")):
+            old = app.vars[key].get(); app.vars[key].set(value)
+            msgs.clear()
+            if app.generate() or [m[0] for m in msgs] != ["error"]:
+                bad.append("main app: bad %s=%r not refused" % (key, value))
+            app.vars[key].set(old)
+        if app.state() != before:
+            bad.append("main app: a refused Generate changed the state")
+    finally:
+        root.destroy()
+    return bad
+
+
 def check_heading():
     """path_model.heading_checks: auto-orient outputs keep A within 1 deg of the travel direction
     (mid and end of every move); orientation-off outputs are flagged; the chamfer-like corner of
@@ -746,6 +892,7 @@ def main():
                              ("project files (both apps)", lambda: check_projects(tmpdir)),
                              ("head direction A vs travel + 3D arrows", check_heading),
                              ("cuboid.py parametric API reproduces the App6 goldens", check_cuboid_params),
+                             ("main app (KRL_Generator): same output + its functions", lambda: check_main_app(tmpdir)),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

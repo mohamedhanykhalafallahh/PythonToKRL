@@ -28,6 +28,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 |---|---|
 | `PythonApplication6.py` | **Main program**, "Cuboidal KRL Code Generator". |
 | `PythonApplication7.py` | **Cylinder app** ("Cylinder KRL Code Generator", class `CylinderApp`). Inputs → `cylinder.generate` → text box, top view, 3D view, export via `krl_export` (`export_to(path)` without a dialog, for tests). |
+| `KRL_Generator.py` | **The all-in-one main app** (class `MainApp`; step 5b). Shape selector (Cuboid / Cylinder) with per-shape fields (each shape keeps its own values), common Path (E, layer height, turns, layers: exact N) and Orientation (A, B/Tilt used as typed, C, auto-orient), options (C_DIS; Helix for the cylinder only), Generate / 3D View / Export (.src or .txt) / Clear / Undo / Redo / Add Comment / Add Approach (inserted at the text cursor), a top view with zoom/pan/fit, an info line (moves, length, X/Y/Z range, max A vs travel), and an output text with its own typing undo. Menus: File (Open/Save Project, Export), Edit, Tools (3D View, Fit, Export Settings, Manual 11-point editor = App6), Help. Projects use `"app": "main"` with keys `shape`, `inputs` {common, cuboid, cylinder}, `options`, `output`. Testable methods: `set_shape`, `generate`, `export_to`, `save_project_to`, `open_project_from`, `state`/`set_state`. |
 | `cuboid.py` | Cuboid path generator (no tkinter): `generate_from_loop` (any base loop, exact counts; App6's Automate passes N+1) and the parametric `CuboidParams` / `validate` / `generate` (exact N, B used everywhere, no tilt clamp) for the main app. |
 | `cylinder.py` | Cylinder path generator (no tkinter): `CylinderParams`, `validate`, `generate` → (path_model items, info), `_lane_change` (tangent biarc between rings). |
 | `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by App6 and App7. |
@@ -262,5 +263,12 @@ Minor:
     - App6 `automate()` calls `cuboid.generate_from_loop(..., turns + 1, layers + 1, ..., tilt (clamped 5–20), auto_orient)` and draws with `draw_output_path()`.
     - Verified before switching: App6's old Automate vs the new generator on 60 random cases (15 clockwise bases, 11 orientation-off, tilt outside 5–20, r = L/2, up to 6 turns × 4 layers): all byte-identical, including the final A. After switching: regression ALL IDENTICAL.
     - New `check_cuboid_params`: the parametric `cuboid.generate` (exact N) reproduces every auto-orient App6 golden `.src` byte for byte. Orientation-off differs only in B on the transition moves: App6 wrote the tilt there, the new API uses B everywhere (intended cleanup).
-  - Next: 5b, the main window.
+  - Committed as e01eb0a.
+  - Step 5b done: `KRL_Generator.py` (see the Files table). Every App6/App7 function is mapped: Auto-Generate/Automate/Generate → shape panel + Generate; Change Center → the centre fields; manual Add Point/CIRC/Import/Save Points → Tools > Manual 11-point editor (opens App6); the Help tab → Help menu; the .src/.txt format → the export dialog file types.
+    - Cuboid "Start Z" = App6's Zr + tool height.
+    - Ctrl+Z / Ctrl+Y inside the text box undo the typing (Text undo=True); elsewhere they are the app undo (inputs + output, 20 steps).
+    - Regression `check_main_app`: the new app reproduces EVERY auto-orient App6 golden (App6 N+1 entered as N) and every App7 golden byte for byte from the same inputs. It also checks shape switching keeping values (and helix shown only for the cylinder), undo/redo of Generate/Clear, comment and approach inserted at the cursor (undoable), the project round trip, a hand edit kept with a notice, an old cylinder project refused (until 5c), and refused Generates leaving the state unchanged. ALL IDENTICAL.
+    - Screenshots checked (cuboid and cylinder). Launches from another folder.
+    - Owner's defaults (2026-11-04): cuboid Length X 150 × Width Y 300, Number of Layers 3, B / Tilt 0 (turns 3, E 2, layer height 2, A 180, C 180, centre 535/10, Start Z 65; cylinder inner Ø 100).
+  - Next: 5c, open old App6/App7 project files in the main app.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
