@@ -34,6 +34,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | `PythonApplication1–5, 7.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"); 7 = circle drawer. |
 | `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Free form opens App5, Cylindrical is a placeholder. Not the current focus. |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
+| `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`. Run after every change; `--update` only when an output change is intended. |
 
 ## How PythonApplication6 works
 
@@ -128,4 +129,11 @@ Minor:
   - Controls: Z exaggeration slider 1-40 (the default makes the stack about 15% of the shape size), "Colour by layer" checkbox, Iso/Top/Front/Side buttons, Reload (re-reads the output after a new Automate). Orthographic view: left-drag rotates, right/middle-drag moves, wheel zooms around the pointer, double-click resets. Axis cross with mm lengths in the info line; green dot = start, red dot = end.
   - Verified: all 51 moves parsed, path continuous, arc ends exact, top-view corner radii exact, 9 transition moves as expected (2 turns, 2 layers). Screenshots checked (iso/front/top). KRL output unchanged.
   - Possible next: arrows showing the head direction (A) along the path.
+- 2026-11-04: Roadmap agreed (after the curve fix, pending the lab test):
+  - Priority 0 (`$VEL.CP` from a mm/s field; A6 wind-up from always-CCW loops) is DEFERRED by the owner: speed is controlled by override for now, and the owner believes A6 rotates endlessly (the datasheet says ±350° unless the option is fitted). Revisit if a print stops on an A6 limit.
+  - Priority 1, shared core, step by step with a check after each step: (1) regression test; (2) `krl_export.py` (header, TOOL/BASE, speed, C_DIS, DEF check, JSON tool/base profiles) shared by all apps (App5 currently writes `TOOL_DATA[1] {Z 20}`); (3) `path_model.py` (segment list; the text box and the 3D view become views of it); (4) parametric cuboid generator (turn t = rounded rectangle L+2d, W+2d, r+d), which removes the hardcoded index offsets; corner radius as an input; (5) delete the variant files and turn their differences into options.
+  - Priority 2, cylinder (App7 is only a stub with invalid KRL): 4 quarter CIRCs per loop (2 halves give an ambiguous 180° A change; many LINs give facets), with an optional helix (Z rising through each loop, no seam). Concentric turns reuse the cuboid transitions.
+  - Priority 3, UI: parametric panel as the main view, pre-export checks (length, time, reach, warnings), JSON project files, A arrows in the 3D view, later a PyInstaller exe. Keep Tkinter.
+  - Later, a deliberate output change: round coordinates (they are currently written like `391.59009742330267`).
+  - Step 1 done: `tests/regression.py` + `tests/golden/` (6 cases: sizes 20×20 to 600×80, E 1-3, up to 5 turns, 1-2 layers, moved centres, tilt off, C_DIS off; 18 files). It also checks that Automate is idempotent. A deliberately corrupted golden line is caught. App code unchanged.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
