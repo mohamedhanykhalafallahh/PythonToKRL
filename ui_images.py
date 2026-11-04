@@ -237,6 +237,23 @@ def app_icon(size, **kw):
     return png_b64(size, size, app_icon_cov(size, **kw))
 
 
+def export_icon_files(folder, png_sizes=(16, 32, 48, 64, 128, 256, 512)):
+    """Write the app icon as PNG files (KRL_Generator_icon_<size>.png) and as a Windows .ico
+    (KRL_Generator.ico) into `folder`. Returns the list of written paths."""
+    import os
+    os.makedirs(folder, exist_ok=True)
+    paths = []
+    for s in png_sizes:
+        p = os.path.join(folder, "KRL_Generator_icon_%d.png" % s)
+        with open(p, "wb") as f:
+            f.write(png_bytes(s, s, app_icon_cov(s), ss=3 if s >= 128 else 4))
+        paths.append(p)
+    ico = os.path.join(folder, "KRL_Generator.ico")
+    write_ico(ico)
+    paths.append(ico)
+    return paths
+
+
 def write_ico(path, sizes=(16, 24, 32, 48, 64, 128, 256), **kw):
     """Windows .ico with PNG-compressed images (Vista+), for the .exe."""
     pngs = [png_bytes(s, s, app_icon_cov(s, **kw), ss=3 if s >= 128 else 4) for s in sizes]

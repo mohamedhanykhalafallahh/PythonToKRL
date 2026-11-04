@@ -41,12 +41,13 @@ def ensure_pyinstaller():
 
 
 def build():
-    # the app icon (three stacked loops + the print head), drawn by ui_images
-    sys.path.insert(0, HERE)
-    import ui_images
-    os.makedirs(os.path.join(HERE, "build"), exist_ok=True)
-    icon = os.path.join(HERE, "build", "KRL_Generator.ico")
-    ui_images.write_ico(icon)
+    # the app icon (three stacked loops + the print head): assets/KRL_Generator.ico, made by
+    # ui_images.export_icon_files (re-created here if the assets folder is missing)
+    icon = os.path.join(HERE, "assets", "KRL_Generator.ico")
+    if not os.path.exists(icon):
+        sys.path.insert(0, HERE)
+        import ui_images
+        ui_images.export_icon_files(os.path.join(HERE, "assets"))
     run([VPY, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
          "--icon", icon,
          "--name", "KRL_Generator", "--distpath", DIST,
