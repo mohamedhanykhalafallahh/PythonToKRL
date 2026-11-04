@@ -1040,9 +1040,40 @@ def change_center():
     ok_button.grid(row=3, column=0, columnspan=7)
 
 
+_MOTION_RE = re.compile(r"^\s*(PTP|LIN|CIRC)\s*\{")
+_APPROX_RE = re.compile(r"\bC_(DIS|PTP|VEL|ORI)\b")
+
+def add_c_dis(krl_code):
+    """Append ' C_DIS' to every LIN/CIRC motion line so the robot blends through the
+    points instead of stopping at each one (distance set by $APO.CDIS in the header).
+
+    Not approximated:
+      - PTP lines (the start must be reached exactly before printing begins),
+      - the very last motion of the program (the print ends exactly on its last point),
+      - lines that already carry an approximation (so re-exporting is safe)."""
+    lines = krl_code.split("\n")
+    motion_idx = [i for i, ln in enumerate(lines) if _MOTION_RE.match(ln)]
+    if not motion_idx:
+        return krl_code
+    last = motion_idx[-1]
+    for i in motion_idx:
+        ln = lines[i]
+        if i == last or ln.lstrip().startswith("PTP"):
+            continue
+        # Keep any trailing ';' comment after the approximation keyword
+        code, sep, comment = ln.partition(";")
+        if _APPROX_RE.search(code):
+            continue
+        lines[i] = code.rstrip() + " C_DIS" + ((" " + sep + comment) if sep else "")
+    return "\n".join(lines)
+
 def save_krl_code():
     # Get the KRL code from the output text widget
     krl_code = output_text.get("1.0", tk.END)
+
+    # Approximate the moves (no stop at every point) unless switched off in the GUI
+    if c_dis_var.get():
+        krl_code = add_c_dis(krl_code)
 
     # Ask the user to choose the file format
     file_format = file_format_var.get()
@@ -1607,6 +1638,8 @@ except Exception:
 
 tilt_along_travel_var = tk.BooleanVar(value=True)
 tilt_angle_var = tk.DoubleVar(value=10.0)
+# Approximation on export: adds C_DIS to LIN/CIRC so the robot does not stop at every point
+c_dis_var = tk.BooleanVar(value=True)
 
 functions_mbtn = ttk.Menubutton(main_tab, text="Functions", style="Functions.TMenubutton")
 functions_menu = tk.Menu(functions_mbtn, tearoff=False)
@@ -1620,6 +1653,9 @@ except Exception:
 
 functions_menu.add_checkbutton(label="Auto-Orient Along Travel (With Tilt Angle)", onvalue=True, offvalue=False,
                                variable=tilt_along_travel_var)
+functions_menu.add_separator()
+functions_menu.add_checkbutton(label="Approximate Moves on Export (C_DIS)", onvalue=True, offvalue=False,
+                               variable=c_dis_var)
 functions_menu.add_separator()
 functions_menu.add_command(label="Add Approach\t (Ctrl+Shift+A)", command=open_approach_popup)
 functions_menu.add_separator()

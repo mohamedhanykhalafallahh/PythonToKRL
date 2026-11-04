@@ -68,7 +68,8 @@ Standard KUKA header (INI folds, PTP HOME). It then sets `BASE_DATA[1] = {Z 200}
 
 ## Known issues / refinement backlog (found 2026-11-03; [x] = fixed in PythonApplication6.py only)
 KRL / robot level:
-- [ ] No `C_DIS` on LIN/CIRC lines, so the robot stops exactly at every point (blobs when extruding), even though `$APO.CDIS` is set.
+- [x] No `C_DIS` on LIN/CIRC lines, so the robot stops exactly at every point (blobs when extruding), even though `$APO.CDIS` is set.
+- [ ] The main file's export header still writes the OLD head TCP `TOOL_DATA[3] = {X -5.711, Y 128.569, Z 204.993}`. The NouvTete TCP `{X 10, Y 0, Z 205, A 180}` is only in `Copie (2)`. Fix next.
 - [ ] Export overwrites `TOOL_DATA[3]` / `BASE_DATA[1]` on the controller permanently; variants write different TCPs into the same slot.
 - [ ] Verify `BAS(#VEL_CP, 2)`: the unit is m/s, so 2 m/s is very fast for printing.
 - [x] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).
@@ -107,4 +108,6 @@ Minor:
   - Step 1b done: the turn/layer transition is now an exact tangent fillet (`_fillet_transition`, called from `create_circ_transition` with the new `prev_point`, taken from `get_last_two_points_of_turn`). A single CIRC can't be tangent to both edges, because start and end lie on rings one E apart. So: outward = LIN of E up the right edge, then a quarter circle of radius r + d_t. Inward = quarter circle of radius r + d_(t-1), then a LIN of E along the top edge into P1. Layer change = a single quarter circle with Z rising along it. The routine is generic (it reads the directions from the path) and falls back to the old 20% rule if the geometry is degenerate. It assumes the previous turn ends with a LIN, which is true for the 11-point base.
   - Verified headlessly on 7 cases (20×20 to 600×80, E = 1 to 5, up to 20 turns, 1 to 3 layers, moved centres): max kink 0° on ALL moves, all non-transition lines byte-identical to before, Z monotone, re-Automate identical, tilt-off works. Hand-checked T0→T1, L0→L1 and T2→T1 for the 300×150 case.
   - Effect on the `.src`: transitions are now 1 or 2 lines (LIN + CIRC or CIRC + LIN) instead of 1 CIRC. The extra LIN is only E long, so C_DIS (step 2) matters there to avoid a stop.
+  - Committed as 4a56bbd.
+  - Step 2 done: `add_c_dis()` runs at export (`save_krl_code`), controlled by the checkable entry "Approximate Moves on Export (C_DIS)" in the Functions menu, under Auto-Orient (on by default, `c_dis_var`). It adds ` C_DIS` to every LIN/CIRC except PTP lines and the very last motion. It is idempotent and keeps trailing `;` comments. The on-screen preview is unchanged. `$APO.CDIS` stays 5 mm (owner's choice). Verified with a headless export (52 moves → 50 with C_DIS; off-export has none; header unchanged). On the robot, blending only happens in continuous run, not in single-step mode.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
