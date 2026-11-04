@@ -25,11 +25,12 @@ import export_settings_dialog
 import krl_export
 import path_model as pm
 import project_files
+import shapes
+import ui_images
+import ui_theme
 import view3d
 
 APP_TITLE = "KRL Generator"
-TRANSITION_COLOR = "purple"
-PATH_COLOR = "#1f77b4"
 UNDO_LIMIT = 20
 
 # Shape-specific fields: (key, label, default)
@@ -185,10 +186,15 @@ class MainApp:
         self.c_dis_var = tk.BooleanVar(value=True)
         self.undo_stack, self.redo_stack = [], []
         self.view = None                 # top view transform (s, tx, ty); None = fit on next draw
+        self.theme = ui_theme.load_theme()
+        self.theme_var = tk.StringVar(value=self.theme)
+        self.P = ui_theme.apply(root, self.theme)
+        ui_theme.window_icon(root)
         self._build_menu()
         self._build_ui()
         self._show_shape_fields()
         self._bind_keys()
+        self.apply_theme(self.theme, save=False)
 
     # ================================================================== UI
     def _build_menu(self):
@@ -214,12 +220,16 @@ class MainApp:
         t.add_command(label="3D View", accelerator="Ctrl+Shift+D", command=self.open_3d_view)
         t.add_command(label="Fit Top View", command=self.fit_view)
         t.add_separator()
-        t.add_command(label="Export Settings (TOOL/BASE profiles)...",
-                      command=lambda: export_settings_dialog.open_dialog(self.root, on_saved=self.on_profile_saved))
+        t.add_command(label="Export Settings (TOOL/BASE profiles)...", command=self.open_export_settings)
         t.add_separator()
         t.add_command(label="Manual 11-point editor (advanced)...", command=self.open_manual_editor)
         t.add_command(label="Free-form editor (experimental)...", command=self.open_free_form_editor)
         m.add_cascade(label="Tools", menu=t)
+        th = tk.Menu(m, tearoff=False)
+        for name, label in (("light", "Light"), ("dark", "Dark")):
+            th.add_radiobutton(label=label, value=name, variable=self.theme_var,
+                               command=lambda n=name: self.apply_theme(n))
+        m.add_cascade(label="Theme", menu=th)
         h = tk.Menu(m, tearoff=False)
         h.add_command(label="How to use", command=lambda: messagebox.showinfo("How to use", HELP_GENERAL))
         h.add_command(label="Current shape", command=lambda: messagebox.showinfo(
@@ -228,102 +238,245 @@ class MainApp:
         m.add_cascade(label="Help", menu=h)
         self.root.config(menu=m)
 
-    def _field(self, parent, row, var, label, width=12):
-        tk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=2)
-        tk.Entry(parent, textvariable=var, width=width).grid(row=row, column=1, sticky="w", padx=4, pady=2)
+    def _card(self, parent, title, fill=tk.X, expand=False, pady=(0, 8)):
+        """A rounded card with a bold title; returns (card, title label)."""
+        f = ttk.Frame(parent, style="Card.TFrame", padding=(14, 8))
+        f.pack(fill=fill, expand=expand, pady=pady)
+        lbl = ttk.Label(f, text=title, style="Title.TLabel")
+        lbl.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        return f, lbl
+
+    def _field(self, parent, row, col, var, label, width=7, label_width=16):
+        ttk.Label(parent, text=label, width=label_width).grid(row=row, column=2 * col, sticky="w", pady=2,
+                                                              padx=(0 if col == 0 else 12, 0))
+        ttk.Entry(parent, textvariable=var, width=width, style="Field.TEntry").grid(
+            row=row, column=2 * col + 1, sticky="w", pady=2)
 
     def _build_ui(self):
         root = self.root
-        left = tk.Frame(root)
-        left.grid(row=0, column=0, sticky="nw", padx=10, pady=8)
+        # ---- header band: name, subtitle, active export profile
+        self.header = tk.Frame(root)
+        self.header.grid(row=0, column=0, sticky="ew")
+        self.logo = tk.PhotoImage(data=ui_images.app_icon(34), master=root)
+        self.logo_lbl = tk.Label(self.header, image=self.logo)
+        self.logo_lbl.pack(side=tk.LEFT, padx=(14, 8), pady=8)
+        self.title_lbl = tk.Label(self.header, text=APP_TITLE, font=(ui_theme.UI_FONT, 14, "bold"))
+        self.title_lbl.pack(side=tk.LEFT)
+        self.sub_lbl = tk.Label(self.header, text="   KUKA KR 6 R900 sixx  \u00b7  continuous fiber printing",
+                                font=(ui_theme.UI_FONT, 9))
+        self.sub_lbl.pack(side=tk.LEFT, pady=(5, 0))
+        self.badge = ttk.Label(self.header, style="Badge.TLabel")
+        self.badge.pack(side=tk.RIGHT, padx=14)
 
-        top = tk.Frame(left)
-        top.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(top, text="Shape:", font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
-        self.shape_combo = ttk.Combobox(top, state="readonly", width=26,
-                                        values=[SHAPE_NAMES[s] for s in SHAPE_FIELDS])
-        self.shape_combo.set(SHAPE_NAMES[self.shape_var.get()])
-        self.shape_combo.bind("<<ComboboxSelected>>", lambda e: self.set_shape(
-            [s for s, n in SHAPE_NAMES.items() if n == self.shape_combo.get()][0]))
-        self.shape_combo.pack(side=tk.LEFT, padx=6)
+        body = ttk.Frame(root, style="Bg.TFrame")
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=10)
+        root.grid_rowconfigure(1, weight=1)
+        root.grid_columnconfigure(0, weight=1)
+        left = ttk.Frame(body, style="Bg.TFrame")
+        left.grid(row=0, column=0, sticky="nw")
+        right = ttk.Frame(body, style="Bg.TFrame")
+        right.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
 
-        self.shape_frame = ttk.LabelFrame(left, text="Shape")
-        self.shape_frame.pack(fill=tk.X, pady=(0, 6))
+        # ---- shape (segmented buttons with icons)
+        card, _ = self._card(left, "Shape")
+        seg = ttk.Frame(card, style="In.TFrame")
+        seg.grid(row=1, column=0, columnspan=4, sticky="w")
+        self.seg_buttons = {}
+        for i, (shape, text) in enumerate((("cuboid", " Cuboid"), ("cylinder", " Cylinder"))):
+            b = ttk.Button(seg, text=text, compound="left", cursor="hand2",
+                           command=lambda s_=shape: self.set_shape(s_))
+            b.pack(side=tk.LEFT, padx=(0 if i == 0 else 6, 0))
+            self.seg_buttons[shape] = b
 
-        path = ttk.LabelFrame(left, text="Path")
-        path.pack(fill=tk.X, pady=(0, 6))
-        for r, (k, label, _) in enumerate(COMMON_FIELDS):
-            self._field(path, r, self.vars[k], label)
+        # ---- size (rebuilt for each shape)
+        self.shape_frame, self.shape_title = self._card(left, "Size")
+        # ---- path
+        card, _ = self._card(left, "Path")
+        for r, row in enumerate(((("step", "Turn step E (mm)"), ("layer_height", "Layer height (mm)")),
+                                 (("turns", "Turns per layer"), ("layers", "Layers"))), 1):
+            for c, (k, label) in enumerate(row):
+                self._field(card, r, c, self.vars[k], label)
+        # ---- orientation & options
+        card, _ = self._card(left, "Orientation (deg)  &  options")
+        abc = ttk.Frame(card, style="In.TFrame")
+        abc.grid(row=1, column=0, columnspan=4, sticky="w")
+        for k, label in (("a", "A"), ("b", "B / Tilt"), ("c", "C")):
+            ttk.Label(abc, text=label).pack(side=tk.LEFT, padx=(0, 5))
+            ttk.Entry(abc, textvariable=self.vars[k], width=6, style="Field.TEntry").pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Checkbutton(card, text=" A follows the travel direction (auto-orient)", variable=self.auto_orient_var,
+                        style="Check.TCheckbutton", cursor="hand2").grid(row=2, column=0, columnspan=4, sticky="w",
+                                                                         pady=(4, 0))
+        ttk.Checkbutton(card, text=" Approximate moves on export (C_DIS)", variable=self.c_dis_var,
+                        style="Check.TCheckbutton", cursor="hand2").grid(row=3, column=0, columnspan=4, sticky="w")
+        self.helix_check = ttk.Checkbutton(card, text=" Helix (single-wall tube, 1 turn only)",
+                                           variable=self.helix_var, style="Check.TCheckbutton", cursor="hand2")
+        self.helix_check.grid(row=4, column=0, columnspan=4, sticky="w")
+        # ---- actions
+        ttk.Button(left, text="Generate", style="Primary.TButton", cursor="hand2",
+                   command=self.generate).pack(fill=tk.X, pady=(2, 0))
+        row = ttk.Frame(left, style="Bg.TFrame")
+        row.pack(fill=tk.X, pady=(6, 0))
+        for i, (text, cmd) in enumerate((("3D View", self.open_3d_view), ("Export KRL\u2026", self.export),
+                                         ("Clear", self.clear))):
+            ttk.Button(row, text=text, style="BgRounded.TButton", cursor="hand2", command=cmd).pack(
+                side=tk.LEFT, expand=True, fill=tk.X, padx=(0 if i == 0 else 6, 0))
 
-        orient = ttk.LabelFrame(left, text="Orientation")
-        orient.pack(fill=tk.X, pady=(0, 6))
-        for r, (k, label, _) in enumerate(ORIENT_FIELDS):
-            self._field(orient, r, self.vars[k], label)
-        tk.Checkbutton(orient, text="Auto-Orient Along Travel (A follows the path)",
-                       variable=self.auto_orient_var).grid(row=3, column=0, columnspan=2, sticky="w", padx=4)
-
-        opts = ttk.LabelFrame(left, text="Options")
-        opts.pack(fill=tk.X, pady=(0, 6))
-        tk.Checkbutton(opts, text="Approximate Moves on Export (C_DIS)", variable=self.c_dis_var).pack(anchor="w", padx=4)
-        self.helix_check = tk.Checkbutton(opts, text="Helix (single-wall tube, 1 turn only)", variable=self.helix_var)
-
-        buttons = tk.Frame(left)
-        buttons.pack(fill=tk.X, pady=4)
-        rows = [[("Generate", self.generate), ("3D View", self.open_3d_view), ("Export KRL Code", self.export),
-                 ("Clear", self.clear)],
-                [("Undo", self.undo), ("Redo", self.redo), ("Add Comment...", self.add_comment),
-                 ("Add Approach...", self.add_approach)]]
-        for r, row in enumerate(rows):
-            for col, (text, cmd) in enumerate(row):
-                tk.Button(buttons, text=text, command=cmd, width=13).grid(row=r, column=col, padx=2, pady=2)
-
-        right = tk.Frame(root)
-        right.grid(row=0, column=1, sticky="nsew", padx=10, pady=8)
-        tk.Label(right, text="Top view (X right, Y up)  -  purple: transitions  -  wheel: zoom, drag: move, "
-                             "double-click: fit", fg="#555555", font=("Segoe UI", 8)).pack(anchor="w")
-        self.canvas = tk.Canvas(right, width=460, height=440, bg="white", highlightthickness=1,
-                                highlightbackground="#cccccc")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.info = tk.Label(right, text="", justify=tk.LEFT, anchor="w", fg="#333333", font=("Segoe UI", 8))
-        self.info.pack(fill=tk.X, pady=(4, 0))
+        # ---- top view card
+        tv = ttk.Frame(right, style="Card.TFrame", padding=(14, 8))
+        tv.pack(fill=tk.BOTH, expand=True)
+        head = ttk.Frame(tv, style="In.TFrame")
+        head.pack(fill=tk.X)
+        ttk.Label(head, text="Top view", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(head, text="wheel: zoom  \u00b7  drag: move  \u00b7  double-click: fit",
+                  style="Muted.TLabel").pack(side=tk.RIGHT)
+        self.canvas = tk.Canvas(tv, width=600, height=330, highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
         c = self.canvas
         c.bind("<MouseWheel>", self._wheel)
         c.bind("<ButtonPress-1>", self._press)
         c.bind("<B1-Motion>", self._drag)
         c.bind("<Double-Button-1>", lambda e: self.fit_view())
         c.bind("<Configure>", lambda e: self.redraw())
-
-        out = tk.Frame(root)
-        out.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 10))
-        self.output_text = tk.Text(out, height=12, width=120, font=("Consolas", 9), wrap=tk.NONE, undo=True)
-        ys = tk.Scrollbar(out, command=self.output_text.yview)
-        xs = tk.Scrollbar(out, orient=tk.HORIZONTAL, command=self.output_text.xview)
+        self.legend = ttk.Frame(tv, style="In.TFrame")
+        self.legend.pack(fill=tk.X)
+        # ---- chips (key numbers) + how the values are shown
+        self.chips = ttk.Frame(right, style="Bg.TFrame")
+        self.chips.pack(fill=tk.X, pady=(8, 8))
+        self.info = ttk.Label(self.chips, text="", style="BgMuted.TLabel")
+        self.info.pack(side=tk.RIGHT)
+        # ---- KRL program card
+        out = ttk.Frame(right, style="Card.TFrame", padding=(14, 8))
+        out.pack(fill=tk.BOTH, expand=True)
+        oh = ttk.Frame(out, style="In.TFrame")
+        oh.pack(fill=tk.X)
+        ttk.Label(oh, text="KRL program  \u00b7  as exported", style="Title.TLabel").pack(side=tk.LEFT)
+        for text, cmd in (("Add Approach\u2026", self.add_approach), ("Add Comment\u2026", self.add_comment),
+                          ("Redo", self.redo), ("Undo", self.undo)):
+            ttk.Button(oh, text=text, style="Small.Rounded.TButton", cursor="hand2", command=cmd).pack(
+                side=tk.RIGHT, padx=(5, 0))
+        txt_frame = ttk.Frame(out, style="In.TFrame")
+        txt_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self.output_text = tk.Text(txt_frame, height=9, width=82, font=(ui_theme.CODE_FONT, ui_theme.CODE_SIZE),
+                                   wrap=tk.NONE, undo=True, relief="flat", highlightthickness=1)
+        ys = ttk.Scrollbar(txt_frame, command=self.output_text.yview)
+        xs = ttk.Scrollbar(txt_frame, orient=tk.HORIZONTAL, command=self.output_text.xview)
         self.output_text.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         self.output_text.grid(row=0, column=0, sticky="nsew")
         ys.grid(row=0, column=1, sticky="ns")
         xs.grid(row=1, column=0, sticky="ew")
-        out.grid_rowconfigure(0, weight=1)
-        out.grid_columnconfigure(0, weight=1)
-        root.grid_rowconfigure(1, weight=1)
-        root.grid_columnconfigure(1, weight=1)
+        txt_frame.grid_rowconfigure(0, weight=1)
+        txt_frame.grid_columnconfigure(0, weight=1)
+        self.output_text.bind("<KeyRelease>", lambda e: self._schedule_highlight())
 
     def _show_shape_fields(self):
-        for w in self.shape_frame.winfo_children():
-            w.destroy()
+        f = self.shape_frame
+        for w in f.winfo_children():
+            if w is not self.shape_title:
+                w.destroy()
         shape = self.shape_var.get()
-        self.shape_frame.config(text=SHAPE_NAMES[shape])
-        for r, (k, label, _) in enumerate(SHAPE_FIELDS[shape]):
-            self._field(self.shape_frame, r, self.shape_vars[shape][k], label)
-        if shape == "cylinder":
-            self.helix_check.pack(anchor="w", padx=4)
+        fs = self.shape_vars[shape]
+        if shape == "cuboid":
+            self.shape_title.config(text="Size  \u00b7  first (inner) turn, mm")
+            rows = ((("xc", "Centre X"), ("yc", "Centre Y")), (("length", "Length X"), ("width", "Width Y")),
+                    (("z0", "Start Z"), ("corner_radius", "Corner radius")))
         else:
-            self.helix_check.pack_forget()
+            self.shape_title.config(text="Size  \u00b7  first (inner) ring, mm")
+            rows = ((("xc", "Centre X"), ("yc", "Centre Y")), (("z0", "Start Z"), ("inner_diameter", "Inner diameter")))
+        for r, row in enumerate(rows, 1):
+            for c, (k, label) in enumerate(row):
+                self._field(f, r, c, fs[k], label)
+        self.shape_hint = ttk.Label(f, text="", style="Muted.TLabel")
+        self.shape_hint.grid(row=len(rows) + 1, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        self._update_shape_hint()
+        if shape == "cylinder":
+            self.helix_check.grid()
+        else:
+            self.helix_check.grid_remove()
+        self._update_seg_buttons()
+
+    def _update_shape_hint(self, *_):
+        hint = getattr(self, "shape_hint", None)
+        if hint is None or not hint.winfo_exists():
+            return
+        if self.shape_var.get() == "cuboid":
+            try:
+                fs = self.shape_vars["cuboid"]
+                r = shapes.auto_corner_radius(float(fs["length"].get()), float(fs["width"].get()))
+                hint.config(text="corner radius blank = automatic (%g mm here)" % round(r, 2))
+            except ValueError:
+                hint.config(text="corner radius blank = automatic (15 % of the shorter side)")
+        else:
+            hint.config(text="inner diameter of the first ring; wall = turns \u00d7 E")
+
+    def _update_seg_buttons(self):
+        icons = getattr(self.root, "_icons", None)
+        for shape, b in self.seg_buttons.items():
+            on = shape == self.shape_var.get()
+            b.configure(style="SegOn.TButton" if on else "SegOff.TButton",
+                        image=icons["%s_%s" % (shape, "on" if on else "off")] if icons else "")
 
     def set_shape(self, shape):
         """Switch the shape panel (each shape keeps its own values)."""
         self.shape_var.set(shape)
-        self.shape_combo.set(SHAPE_NAMES[shape])
         self._show_shape_fields()
+
+    def apply_theme(self, name, save=True):
+        """Switch between the light and the dark theme (remembered for the next start)."""
+        self.theme = name
+        self.theme_var.set(name)
+        P = self.P = ui_theme.apply(self.root, name)
+        self.root.configure(bg=P["bg"])
+        self.header.configure(bg=P["header"])
+        for w in (self.logo_lbl, self.title_lbl):
+            w.configure(bg=P["header"], fg=P["header_text"])
+        self.sub_lbl.configure(bg=P["header"], fg=P["header_muted"])
+        self.canvas.configure(bg=P["canvas"])
+        self.output_text.configure(bg=P["code_bg"], fg=P["text"], insertbackground=P["text"],
+                                   selectbackground=P["select_bg"], selectforeground=P["text"],
+                                   highlightbackground=P["border"], highlightcolor=P["accent"])
+        self.output_text.tag_configure("cmt", foreground=P["cmt"])
+        self.output_text.tag_configure("kw", foreground=P["kw"], font=(ui_theme.CODE_FONT, ui_theme.CODE_SIZE, "bold"))
+        self._update_seg_buttons()
+        ui_theme.title_bar(self.root, name == "dark")
+        view = view3d._open_views.get(self.root)
+        if view is not None and view.win.winfo_exists():
+            view.apply_palette(P)
+        self._update_badge()
+        self.redraw()
+        self._update_info()
+        self._highlight()
+        if save:
+            ui_theme.save_theme(name)
+
+    def _update_badge(self):
+        s, _ = krl_export.active_settings()
+        tool = "TOOL %d {X %g, Y %g, Z %g}" % (s.tool_no, s.tool[0], s.tool[1], s.tool[2])
+        dec = "full precision" if s.decimals is None else "%d decimals" % s.decimals
+        self.badge.configure(text="Export profile: %s  \u00b7  %s  \u00b7  %s" % (s.profile, tool, dec))
+
+    def _schedule_highlight(self):
+        if getattr(self, "_hl_job", None):
+            self.root.after_cancel(self._hl_job)
+        self._hl_job = self.root.after(250, self._highlight)
+
+    def _highlight(self):
+        """Syntax colours in the KRL text: comments grey, PTP/LIN/CIRC bold in the accent."""
+        self._hl_job = None
+        t = self.output_text
+        t.tag_remove("cmt", "1.0", tk.END)
+        t.tag_remove("kw", "1.0", tk.END)
+        for i, line in enumerate(t.get("1.0", "end-1c").split("\n"), 1):
+            s = line.lstrip()
+            if s.startswith(";"):
+                t.tag_add("cmt", "%d.0" % i, "%d.end" % i)
+            else:
+                for kw in ("PTP", "LIN", "CIRC"):
+                    if s[:len(kw)].upper() == kw:
+                        start = len(line) - len(s)
+                        t.tag_add("kw", "%d.%d" % (i, start), "%d.%d" % (i, start + len(kw)))
+                        break
 
     def _bind_keys(self):
         r = self.root
@@ -334,6 +487,8 @@ class MainApp:
         r.bind_all("<Control-Shift-S>", lambda e: self.save_project())
         r.bind_all("<Control-z>", lambda e: None if e.widget is self.output_text else self.undo())
         r.bind_all("<Control-y>", lambda e: None if e.widget is self.output_text else self.redo())
+        for k in ("length", "width"):
+            self.shape_vars["cuboid"][k].trace_add("write", self._update_shape_hint)
 
     # ================================================================== state / undo
     def state(self):
@@ -367,6 +522,7 @@ class MainApp:
         self.output_text.delete("1.0", tk.END)
         self.output_text.insert("1.0", st.get("output", ""))
         self.output_text.edit_reset()
+        self._highlight()
         if redraw:
             self.view = None
             self.redraw()
@@ -463,6 +619,7 @@ class MainApp:
         self.output_text.insert(tk.END, text)
         self.output_text.edit_reset()
         self._generated = (items, text)
+        self._highlight()
         self.view = None
         self.redraw()
         self._update_info()
@@ -471,28 +628,50 @@ class MainApp:
         """Export Settings saved: if the box still holds the generated text (no hand edits),
         show it again with the (possibly new) decimals."""
         gen = getattr(self, "_generated", None)
+        self._update_badge()
         if gen and self.output_text.get("1.0", "end-1c") == gen[1]:
             self.show_items(gen[0])
         else:
             self._update_info()
 
     def _update_info(self):
+        """Key numbers as chips under the top view, the layer legend, and how values are shown."""
+        for w in self.chips.winfo_children():
+            if w is not self.info:
+                w.destroy()
         items = pm.parse_krl(self.body_text())
         start, moves = pm.path_3d(items)
+        settings = krl_export.active_settings()[0]
+        self.info.config(text=("as exported: %d decimals" % settings.decimals) if settings.decimals is not None
+                         else "as exported: full precision")
+        self._update_legend(moves)
         if not moves:
-            self.info.config(text="")
             return
         pts = [q for m in moves for q in m['pts']]
         xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
         hc = pm.heading_checks(items)
-        a_txt = ("A vs travel: max %.1f deg" % max(h['dev'] for h in hc)) if hc else "no A values"
-        settings = krl_export.active_settings()[0]
-        shown = ("values as exported: %d decimals (profile %s)" % (settings.decimals, settings.profile)
-                 if settings.decimals is not None else "values at full precision (profile %s)" % settings.profile)
-        self.info.config(text=(
-            "%d moves  |  path %.2f m  |  X %.1f..%.1f  Y %.1f..%.1f  Z %.1f..%.1f mm  |  %s\n%s"
-            % (len(moves), pm.path_length(moves) / 1000.0, min(xs), max(xs), min(ys), max(ys), min(zs), max(zs),
-               a_txt, shown)))
+        chips = ["%d moves" % len(moves), "path %.2f m" % (pm.path_length(moves) / 1000.0),
+                 "X %.0f\u2026%.0f  Y %.0f\u2026%.0f  Z %.1f\u2026%.1f mm" % (min(xs), max(xs), min(ys), max(ys),
+                                                                    min(zs), max(zs)),
+                 ("A vs travel %.1f\u00b0" % max(h['dev'] for h in hc)) if hc else "no A values"]
+        for t in chips:
+            ttk.Label(self.chips, text=t, style="Chip.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+
+    def _update_legend(self, moves):
+        for w in self.legend.winfo_children():
+            w.destroy()
+        P = self.P
+        n_layers = (max(m['layer'] for m in moves) + 1) if moves else 0
+        if n_layers:
+            ttk.Label(self.legend, text="3D view layer colours  1 ", style="Muted.TLabel").pack(side=tk.LEFT)
+            bar = tk.Canvas(self.legend, width=110, height=9, bg=P["card"], highlightthickness=0)
+            bar.pack(side=tk.LEFT, pady=3)
+            for k in range(110):
+                bar.create_line(k, 0, k, 9, fill=ui_images.ramp(P["ramp"], k / 109.0))
+            ttk.Label(self.legend, text=" %d    " % n_layers, style="Muted.TLabel").pack(side=tk.LEFT)
+        for col, t in ((P["transition"], "transitions"), (P["start"], "start"), (P["end"], "end")):
+            tk.Label(self.legend, text="\u25a0", fg=col, bg=P["card"], font=(ui_theme.UI_FONT, 10)).pack(side=tk.LEFT)
+            ttk.Label(self.legend, text=t + "   ", style="Muted.TLabel").pack(side=tk.LEFT)
 
     def clear(self):
         self.push_undo()
@@ -500,19 +679,26 @@ class MainApp:
         self.output_text.edit_reset()
         self.view = None
         self.redraw()
-        self.info.config(text="")
+        self._update_info()
 
     def body_text(self):
         return self.output_text.get("1.0", tk.END)
 
     # ================================================================== edit helpers
-    def add_comment(self):
+    def _dialog(self, title):
         win = tk.Toplevel(self.root)
-        win.title("Add Comment")
-        tk.Label(win, text="Comment (inserted at the text cursor as a '; ...' line):").pack(padx=10, pady=(10, 4))
+        win.title(title)
+        win.configure(bg=self.P["card"])
+        win.transient(self.root)
+        ui_theme.title_bar(win, self.theme == "dark")
+        return win
+
+    def add_comment(self):
+        win = self._dialog("Add Comment")
+        ttk.Label(win, text="Comment (inserted at the text cursor as a '; ...' line):").pack(padx=14, pady=(12, 6))
         var = tk.StringVar()
-        entry = tk.Entry(win, textvariable=var, width=60)
-        entry.pack(padx=10)
+        entry = ttk.Entry(win, textvariable=var, width=60, style="Field.TEntry")
+        entry.pack(padx=14)
         entry.focus_set()
 
         def ok(event=None):
@@ -520,21 +706,21 @@ class MainApp:
             if text:
                 self.insert_line(pm.Comment(text).to_krl())
             win.destroy()
-        tk.Button(win, text="Add", command=ok, width=10).pack(pady=8)
+        ttk.Button(win, text="Add", command=ok, width=10, style="CardPrimary.TButton", cursor="hand2").pack(pady=12)
         entry.bind("<Return>", ok)
         return win
 
     def add_approach(self):
-        win = tk.Toplevel(self.root)
-        win.title("Add Approach Move (PTP)")
-        tk.Label(win, text="PTP move, inserted at the text cursor (e.g. above the start point):").grid(
-            row=0, column=0, columnspan=6, padx=10, pady=(10, 4))
+        win = self._dialog("Add Approach Move (PTP)")
+        ttk.Label(win, text="PTP move, inserted at the text cursor (e.g. above the start point):").grid(
+            row=0, column=0, columnspan=6, padx=14, pady=(12, 6))
         vars_ = {}
         for i, key in enumerate("XYZABC"):
-            tk.Label(win, text=key + ":").grid(row=1 + i // 3, column=(i % 3) * 2, padx=4, pady=2, sticky="e")
+            ttk.Label(win, text=key).grid(row=1 + i // 3, column=(i % 3) * 2, padx=(14, 4), pady=3, sticky="e")
             vars_[key] = tk.StringVar(value={"A": self.vars["a"].get(), "B": self.vars["b"].get(),
                                              "C": self.vars["c"].get()}.get(key, ""))
-            tk.Entry(win, textvariable=vars_[key], width=10).grid(row=1 + i // 3, column=(i % 3) * 2 + 1, padx=4, pady=2)
+            ttk.Entry(win, textvariable=vars_[key], width=9, style="Field.TEntry").grid(
+                row=1 + i // 3, column=(i % 3) * 2 + 1, padx=(0, 6), pady=3)
 
         def ok():
             try:
@@ -544,7 +730,8 @@ class MainApp:
                 return
             self.insert_line(pm.Ptp(pm.pose(v[:3], v[3:], cuboid.PTP_S, cuboid.PTP_T)).to_krl())
             win.destroy()
-        tk.Button(win, text="Add", command=ok, width=10).grid(row=3, column=0, columnspan=6, pady=8)
+        ttk.Button(win, text="Add", command=ok, width=10, style="CardPrimary.TButton", cursor="hand2").grid(
+            row=3, column=0, columnspan=6, pady=12)
         win.vars = vars_
         win.ok = ok
         return win
@@ -553,6 +740,7 @@ class MainApp:
         """Insert a whole line at the start of the line where the text cursor is (undoable)."""
         self.push_undo()
         self.output_text.insert("insert linestart", line + "\n")
+        self._highlight()
         self.redraw()
         self._update_info()
 
@@ -571,6 +759,7 @@ class MainApp:
     def redraw(self):
         c = self.canvas
         c.delete("all")
+        P = self.P
         start, moves = pm.path_3d(pm.parse_krl(self.body_text()))
         pts = [q for m in moves for q in m['pts']] + ([start] if start else [])
         if not pts:
@@ -580,18 +769,28 @@ class MainApp:
             self.view = self._fit(pts, W, H)
         s, tx, ty = self.view
         scr = lambda q: (tx + q[0] * s, ty - q[1] * s)
+        step = 10.0                                    # faint grid: 10 mm (50 / 100 mm when zoomed out)
+        while step * s < 8:
+            step *= 5 if str(step).startswith("1") else 2
+        g = step * s
+        for k in range(int(W / g) + 2):
+            x = tx % g + (k - 1) * g
+            c.create_line(x, 0, x, H, fill=P["grid"])
+        for k in range(int(H / g) + 2):
+            y = ty % g + (k - 1) * g
+            c.create_line(0, y, W, y, fill=P["grid"])
         for m in moves:
             coords = []
             for q in m['pts']:
                 coords.extend(scr(q))
-            c.create_line(*coords, fill=TRANSITION_COLOR if m['transition'] else PATH_COLOR,
-                          width=2 if m['transition'] else 1)
-        for q, col in ((start, "#2ca02c"), (moves[-1]['pts'][-1] if moves else None, "#d62728")):
+            c.create_line(*coords, fill=P["transition"] if m['transition'] else P["path"],
+                          width=2.2 if m['transition'] else 1.6, capstyle=tk.ROUND)
+        for q, col in ((start, P["start"]), (moves[-1]['pts'][-1] if moves else None, P["end"])):
             if q:
                 x, y = scr(q)
-                c.create_oval(x - 4, y - 4, x + 4, y + 4, fill=col, outline="")
-        c.create_text(8, H - 8, anchor="sw", fill="#777777", font=("Segoe UI", 8),
-                      text="green = start, red = end")
+                c.create_oval(x - 5, y - 5, x + 5, y + 5, fill=col, outline=P["canvas"], width=2)
+        c.create_text(W - 8, H - 6, anchor="se", fill=P["muted"], font=(ui_theme.UI_FONT, 8),
+                      text="grid %g mm" % step)
 
     def _wheel(self, e):
         if self.view is None:
@@ -614,6 +813,12 @@ class MainApp:
         self.redraw()
 
     # ================================================================== windows / files
+    def open_export_settings(self):
+        d = export_settings_dialog.open_dialog(self.root, on_saved=self.on_profile_saved)
+        ui_theme.paint_tk(d.win, self.P)
+        ui_theme.title_bar(d.win, self.theme == "dark")
+        return d
+
     def open_3d_view(self):
         view3d.open_view(self.root, self.body_text, "Nothing to show yet. Press Generate first.")
 
@@ -655,6 +860,7 @@ class MainApp:
         code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
         with open(path, "w") as f:
             f.write(code)
+        self._update_badge()
         messagebox.showinfo("KRL Code Exported", "Exported with profile '%s'." % settings.profile)
         return True
 
@@ -832,10 +1038,60 @@ def selftest(quiet=False):
     return 0 if ok else 1
 
 
+def debug_ui_report(app, path):
+    """Diagnostics: the window layout (versions, scaling, fonts, every widget's class, mapping,
+    geometry and text) written to `path`. Started with --debug-ui; useful on a new PC."""
+    import platform
+    import tkinter.font as tkfont
+    r = app.root
+    r.update()
+    dark_bar = "?"
+    try:
+        import ctypes
+        val = ctypes.c_int(-1)
+        hwnd = ctypes.windll.user32.GetParent(r.winfo_id())
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val)) == 0:
+            dark_bar = val.value
+    except Exception:
+        pass
+    lines = ["Tk %s, Python %s, %s, frozen=%s, dark title bar=%s" % (
+                 r.tk.call("info", "patchlevel"), platform.python_version(), platform.platform(), is_frozen(), dark_bar),
+             "tk scaling %s, theme %s, ttk theme %s" % (r.tk.call("tk", "scaling"), app.theme, ttk.Style(r).theme_use()),
+             "fonts: TkDefaultFont %s" % tkfont.Font(root=r, name="TkDefaultFont", exists=True).actual()]
+
+    def walk(w, depth):
+        for c in w.winfo_children():
+            if isinstance(c, tk.Menu):
+                continue
+            try:
+                text = c.cget("text")
+            except tk.TclError:
+                text = ""
+            style = ""
+            try:
+                style = str(c.cget("style"))
+            except tk.TclError:
+                pass
+            lines.append("%s%s mapped=%d geom=%s mgr=%s style=%s text=%r" % (
+                "  " * depth, c.winfo_class(), c.winfo_ismapped(), c.winfo_geometry(), c.winfo_manager(), style,
+                str(text)[:40]))
+            walk(c, depth + 1)
+    walk(r, 0)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--selftest" in argv:
         sys.exit(selftest(quiet="--quiet" in argv))
+    if "--debug-ui" in argv:
+        root = tk.Tk()
+        app = MainApp(root)
+        root.after(2500, lambda: (debug_ui_report(app, os.path.join(krl_export.app_dir(), "debug_ui.txt")),
+                                  root.destroy()))
+        root.mainloop()
+        return
     if "--tool" in argv:
         i = argv.index("--tool")
         name = argv[i + 1] if i + 1 < len(argv) else ""

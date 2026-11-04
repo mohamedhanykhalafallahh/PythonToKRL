@@ -181,3 +181,7 @@ cython_debug/
 .cursorindexingignore
 # KRL Generator: self-test report written next to the program
 selftest_report.txt
+
+# KRL Generator: per-PC interface settings (theme)
+app_settings.json
+debug_ui.txt

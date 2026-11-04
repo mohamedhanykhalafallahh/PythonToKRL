@@ -654,6 +654,91 @@ def check_box_rounding(tmpdir):
     return bad
 
 
+def check_theme():
+    """Light / dark theme: switching restyles everything without touching inputs or output,
+    the choice is saved (temporary settings file in the tests) and used at the next start, an
+    open 3D view follows, and the older editors' light touch uses the saved theme."""
+    import json
+    from tkinter import ttk
+    import ui_theme
+    import view3d
+    bad = []
+    messagebox.showinfo = messagebox.showwarning = messagebox.showerror = lambda *a, **k: None
+    if os.path.exists(ui_theme.SETTINGS_PATH):
+        os.remove(ui_theme.SETTINGS_PATH)
+    root, app = _new_main_app()
+    try:
+        if app.theme != "light":
+            bad.append("default theme is not light")
+        app.generate()
+        before = app.state()
+        app.open_3d_view()
+        app.apply_theme("dark")
+        D = ui_theme.THEMES["dark"]
+        st = ttk.Style(root)
+        if st.layout("Card.TFrame")[0][0] != "dark.Card.bg" or app.canvas.cget("bg") != D["canvas"] or \
+                app.output_text.cget("bg") != D["code_bg"] or app.header.cget("bg") != D["header"]:
+            bad.append("dark theme not applied to all parts")
+        v = view3d._open_views.get(root)
+        if v is None or v.canvas.cget("bg") != D["canvas"]:
+            bad.append("open 3D view did not follow the theme")
+        if app.state() != before:
+            bad.append("switching the theme changed inputs or output")
+        if json.load(open(ui_theme.SETTINGS_PATH)).get("theme") != "dark":
+            bad.append("dark theme not saved")
+        if st.lookup("SegOn.TButton", "foreground") != D["accent_text"] or \
+                str(app.seg_buttons["cuboid"].cget("style")) != "SegOn.TButton":
+            bad.append("shape buttons not styled")
+        app.set_shape("cylinder")
+        if str(app.seg_buttons["cylinder"].cget("style")) != "SegOn.TButton" or \
+                str(app.seg_buttons["cuboid"].cget("style")) != "SegOff.TButton":
+            bad.append("shape buttons do not follow the selected shape")
+        app.set_shape("cuboid")
+    finally:
+        root.destroy()
+    # PERFORMANCE guard: big opaque theme images (small transparent ones made a full repaint take 9 s)
+    import base64
+    import time as _time
+    import ui_images
+    png = base64.b64decode(ui_images.nine_slice(64, 32, 5, "#ffffff", "#cccccc", bg="#eeeeee"))
+    if png[25] != 2:                                  # PNG colour type 2 = RGB (no alpha channel)
+        bad.append("nine_slice images are not opaque RGB")
+    root, app3 = _new_main_app()
+    try:
+        tiled = root._theme_elements[app3.theme]["tiled"]          # images stretched by ttk
+        small = [i for i in tiled if i.width() < 200 or i.height() < 32]
+        if not tiled or small:
+            bad.append("%d of %d stretched theme images are too small to tile quickly" % (len(small), len(tiled)))
+        app3.generate()
+        root.deiconify()
+        root.update()
+        t = _time.perf_counter()
+        root.withdraw(); root.deiconify(); root.update()
+        dt = _time.perf_counter() - t
+        if dt > 2.5:
+            bad.append("full window repaint takes %.1f s (should be well under 1 s)" % dt)
+    finally:
+        root.destroy()
+    root, app2 = _new_main_app()                     # next start: dark from the settings file
+    try:
+        if app2.theme != "dark" or app2.canvas.cget("bg") != ui_theme.THEMES["dark"]["canvas"]:
+            bad.append("saved theme not used at the next start")
+        app2.apply_theme("light")
+        if ttk.Style(root).layout("Card.TFrame")[0][0] != "light.Card.bg":
+            bad.append("switching back to light failed")
+    finally:
+        root.destroy()
+    ui_theme.save_theme("dark")
+    G = _new_app6()                                   # light touch of the manual editor
+    try:
+        if G["root"].cget("bg") != ui_theme.THEMES["dark"]["card"] or G["canvas"].cget("bg") != "white":
+            bad.append("manual editor light touch: wrong colours (canvas must stay white)")
+    finally:
+        G["root"].destroy()
+    ui_theme.save_theme("light")
+    return bad
+
+
 def check_frozen_mode():
     """Packaged-exe behaviour, simulated with sys.frozen: profiles next to the .exe, the
     editors started as 'exe --tool ...', and App6's Back restarting the exe."""
@@ -1040,7 +1125,9 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Never use the user's export_profiles.json: the apps export with the built-in profile
         import krl_export
+        import ui_theme
         krl_export.PROFILES_PATH = os.path.join(tmpdir, "no_profiles_here.json")
+        ui_theme.SETTINGS_PATH = os.path.join(tmpdir, "app_settings.json")     # never the user's theme file
         runs =[(n, c, run_case) for n, c in CASES.items()] + [(n, c, run_cyl_case) for n, c in CYL_CASES.items()]
         for name, case, runner in runs:
             try:
@@ -1082,6 +1169,7 @@ def main():
                              ("main app opens old App6 / App7 projects", lambda: check_old_projects(tmpdir)),
                              ("main app text box rounded like the export", lambda: check_box_rounding(tmpdir)),
                              ("packaged-exe behaviour (simulated sys.frozen)", check_frozen_mode),
+                             ("light / dark theme", check_theme),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

@@ -41,7 +41,14 @@ def ensure_pyinstaller():
 
 
 def build():
+    # the app icon (three stacked loops + the print head), drawn by ui_images
+    sys.path.insert(0, HERE)
+    import ui_images
+    os.makedirs(os.path.join(HERE, "build"), exist_ok=True)
+    icon = os.path.join(HERE, "build", "KRL_Generator.ico")
+    ui_images.write_ico(icon)
     run([VPY, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
+         "--icon", icon,
          "--name", "KRL_Generator", "--distpath", DIST,
          "--workpath", os.path.join(HERE, "build"), "--specpath", os.path.join(HERE, "build"),
          # the older editors are started as "KRL_Generator.exe --tool manual / freeform"

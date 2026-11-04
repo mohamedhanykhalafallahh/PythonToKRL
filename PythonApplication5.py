@@ -635,5 +635,9 @@ h_scrollbar.grid(row=4, column=6, sticky='ew')
 # Configure the canvas to use the scrollbars
 canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
+# Same look as the main app (theme colours, fonts, icon); layout and drawing canvas unchanged
+import ui_theme
+ui_theme.light_touch(root)
+
 root.mainloop()
 

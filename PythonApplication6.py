@@ -1613,6 +1613,10 @@ btn_automation.pack(fill='x', padx=20, pady=50)
 
 ## Tools tab content removed (Undo/Redo moved to Functions menu)
 
+# Same look as the main app (theme colours, fonts, icon); layout and drawing canvas unchanged
+import ui_theme
+ui_theme.light_touch(root)
+
 # Started with a project file (the main app opens hand-made cuboid bases here)
 _project_args = [a for a in sys.argv[1:] if a.lower().endswith(".json") and os.path.isfile(a)]
 if _project_args:

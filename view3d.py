@@ -11,10 +11,11 @@ import tkinter as tk
 from tkinter import messagebox
 
 import path_model as pm
+import ui_images
+import ui_theme
 
-LAYER_COLORS_3D = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#8c564b",
-                   "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#393b79"]
-TRANSITION_COLOR_3D = "purple"
+# Layer colours: a continuous ramp (ui_images.layer_colors), so any number of layers gets
+# distinct colours; transitions, path and texts come from the theme palette (ui_theme).
 ARROW_OK, ARROW_WARN, ARROW_BAD = "#2ca02c", "#ff7f0e", "#d62728"   # A vs travel: <= 5, <= 20, > 20 deg
 ARROW_PX = 16                                                       # arrow length on screen
 
@@ -76,6 +77,8 @@ class View3D:
         c.bind("<MouseWheel>", self._wheel)
         c.bind("<Double-Button-1>", lambda e: self.reset_view())
 
+        self.P = getattr(parent, "_palette", None) or ui_theme.THEMES["light"]
+        self.apply_palette(self.P, redraw=False)
         self.reset_view(redraw=False)
         self.reload()
 
@@ -126,7 +129,7 @@ class View3D:
         W, H = max(c.winfo_width(), 10), max(c.winfo_height(), 10)
         if not getattr(self, "pts_all", None):
             c.create_text(W / 2, H / 2, text="Nothing to show yet: generate a path first, then press Reload.",
-                          fill="#777777")
+                          fill=self.P["muted"])
             self.info.config(text="")
             return
         zex = max(1, int(self.zex_var.get()))
@@ -154,20 +157,22 @@ class View3D:
 
         # Path
         by_layer = self.by_layer_var.get()
+        n_layers = (max(m['layer'] for m in self.moves) + 1) if self.moves else 1
+        layer_cols = ui_images.layer_colors(n_layers, self.P["ramp"])
         for m in self.moves:
             if m['transition']:
-                col = TRANSITION_COLOR_3D
+                col = self.P["transition"]
             elif by_layer:
-                col = LAYER_COLORS_3D[m['layer'] % len(LAYER_COLORS_3D)]
+                col = layer_cols[m['layer']]
             else:
-                col = "blue"
+                col = self.P["path"]
             coords = []
             for p in m['pts']:
                 coords.extend(scr(p))
             c.create_line(*coords, fill=col, width=2 if m['transition'] else 1)
 
         # Start (green) and end (red) markers
-        for p, col in ((self.start, "#2ca02c"), (self.moves[-1]['pts'][-1] if self.moves else None, "#d62728")):
+        for p, col in ((self.start, self.P["start"]), (self.moves[-1]['pts'][-1] if self.moves else None, self.P["end"])):
             if p:
                 x, y = scr(p)
                 c.create_oval(x - 4, y - 4, x + 4, y + 4, fill=col, outline="")
@@ -233,6 +238,15 @@ class View3D:
         self.pan = (mx - (mx - self.pan[0]) * f, my - (my - self.pan[1]) * f)
         self.zoom *= f
         self.redraw()
+
+    def apply_palette(self, P, redraw=True):
+        """Theme colours (light / dark) for this window; the canvas included."""
+        self.P = P
+        ui_theme.paint_tk(self.win, P, canvases=True)
+        self.info.configure(fg=P["muted"])
+        ui_theme.title_bar(self.win, P is ui_theme.THEMES["dark"])
+        if redraw:
+            self.redraw()
 
     def close(self):
         if self.on_close:
