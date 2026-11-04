@@ -119,4 +119,13 @@ Minor:
   - The top-right corner looked messy before because outward, inward and layer transitions take different (real) paths there, while the other corners overlap exactly across layers. It was not leftover drawings.
   - The manual-mode "dummy" closing CIRC drawing in `add_point` is unchanged (still two lines).
   - Testing tip: `runpy.run_path` returns a COPY of the globals, so use `g["automate"].__globals__` for live values. For screenshots, use PowerShell `CopyFromScreen`, with Tk coordinates multiplied by the display scale (1.25 on this PC).
+- 2026-11-04: Canvas cleanup committed and pushed (5814381). Pushing from this PC works again.
+- 2026-11-04: Canvas drag to move: left-drag pans 1:1 (`start_pan`/`do_pan`/`end_pan`, via `scan_mark`/`scan_dragto`). On press, the scroll region is enlarged by one window size on each side, so you can drag past the drawing. Double-click still fits. Testing tip: synthetic Tk events need increasing `time=` values, otherwise every second press counts as a double-click.
+- 2026-11-04: 3D View (Functions → "3D View", Ctrl+Shift+D), with no extra libraries (option B; matplotlib/numpy are not installed on this PC). It is a separate window (class `View3D`); the 2D canvas is unchanged.
+  - It reads the KRL output text (`parse_path_3d`), so it shows exactly what goes to the robot. CIRCs are real 3D arcs through start/via/end (`_arc_points_3d`).
+  - Transitions are in purple: moves after a `TRANSITION` comment up to the first CIRC, plus the inward trailing LIN (detected because two LINs in a row never happen inside a turn).
+  - Layers are coloured from the `; ===== LAYER n` comments.
+  - Controls: Z exaggeration slider 1-40 (the default makes the stack about 15% of the shape size), "Colour by layer" checkbox, Iso/Top/Front/Side buttons, Reload (re-reads the output after a new Automate). Orthographic view: left-drag rotates, right/middle-drag moves, wheel zooms around the pointer, double-click resets. Axis cross with mm lengths in the info line; green dot = start, red dot = end.
+  - Verified: all 51 moves parsed, path continuous, arc ends exact, top-view corner radii exact, 9 transition moves as expected (2 turns, 2 layers). Screenshots checked (iso/front/top). KRL output unchanged.
+  - Possible next: arrows showing the head direction (A) along the path.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

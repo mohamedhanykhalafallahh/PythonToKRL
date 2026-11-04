@@ -392,6 +392,26 @@ def zoom_canvas(event):
     if abs(err_x) > 0.5 or abs(err_y) > 0.5:
         _show_view(new_left - err_x, new_top - err_y)
 
+def start_pan(event):
+    """Left button pressed on the canvas: allow dragging well past the drawing, then mark."""
+    w, h = _canvas_view_size()
+    bbox = canvas.bbox(tk.ALL)
+    left, top = canvas.canvasx(0), canvas.canvasy(0)
+    if bbox:
+        # Scroll region = drawing plus one window size of free space on every side
+        x0, y0 = min(bbox[0] - w, left), min(bbox[1] - h, top)
+        x1, y1 = max(bbox[2] + w, left + w), max(bbox[3] + h, top + h)
+        canvas.config(scrollregion=(x0, y0, x1, y1))
+    canvas.scan_mark(event.x, event.y)
+    canvas.config(cursor="fleur")
+
+def do_pan(event):
+    """Drag with the left button: move the view with the mouse (1:1)."""
+    canvas.scan_dragto(event.x, event.y, gain=1)
+
+def end_pan(event=None):
+    canvas.config(cursor="")
+
 def reset_view_zoom():
     """Called when the canvas is cleared: start again at the default scale."""
     global view_zoom
@@ -1688,6 +1708,305 @@ def automation_instructions():
         "• Keep base path consistent (LIN/CIRC order) for best automation"
     )
 
+# =====================================================================================
+# 3D VIEW (separate window, no extra libraries)
+# Shows the path exactly as written in the KRL output text (what goes to the robot):
+# all layers stacked in Z, CIRCs as real 3D arcs, transitions in purple.
+# Left-drag rotates, right/middle-drag moves, wheel zooms, double-click resets.
+# =====================================================================================
+_NUM_3D = r"(-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)"
+_XYZ_RES_3D = [re.compile(r"\b" + k + r"\s+" + _NUM_3D) for k in ("X", "Y", "Z")]
+LAYER_COLORS_3D = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#8c564b",
+                   "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#393b79"]
+TRANSITION_COLOR_3D = "purple"
+
+def _xyz_3d(text):
+    vals = []
+    for rx in _XYZ_RES_3D:
+        m = rx.search(text)
+        if not m:
+            return None
+        vals.append(float(m.group(1)))
+    return tuple(vals)
+
+def _v_sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+def _v_add(a, b): return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+def _v_mul(a, k): return (a[0] * k, a[1] * k, a[2] * k)
+def _v_dot(a, b): return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+def _v_cross(a, b): return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+def _arc_points_3d(p1, pv, p2, step_deg=5.0):
+    """Points along the circular arc p1 -> pv -> p2 in 3D (what a KUKA CIRC does).
+    Falls back to the straight polyline if the three points are collinear."""
+    a, b = _v_sub(p1, p2), _v_sub(pv, p2)
+    axb = _v_cross(a, b)
+    n2 = _v_dot(axb, axb)
+    if n2 < 1e-12:
+        return [p1, pv, p2]
+    # circumcentre of the triangle (p2 as origin)
+    c = _v_add(p2, _v_mul(_v_cross(_v_sub(_v_mul(b, _v_dot(a, a)), _v_mul(a, _v_dot(b, b))), axb), 1.0 / (2 * n2)))
+    r_vec = _v_sub(p1, c)
+    R = math.sqrt(_v_dot(r_vec, r_vec))
+    e1 = _v_mul(r_vec, 1.0 / R)
+    nhat = _v_mul(axb, 1.0 / math.sqrt(n2))
+    e2 = _v_cross(nhat, e1)
+    two_pi = 2 * math.pi
+    def ang(q):
+        d = _v_sub(q, c)
+        return math.atan2(_v_dot(d, e2), _v_dot(d, e1)) % two_pi
+    av, a2 = ang(pv), ang(p2)
+    sweep = a2 if av <= a2 else -(two_pi - a2)       # go the way that passes the via point
+    n = max(4, int(abs(math.degrees(sweep)) / step_deg))
+    pts = []
+    for k in range(n + 1):
+        t = sweep * k / n
+        pts.append(_v_add(c, _v_add(_v_mul(e1, R * math.cos(t)), _v_mul(e2, R * math.sin(t)))))
+    pts[-1] = p2
+    return pts
+
+def parse_path_3d(text):
+    """Read the KRL motion lines into a list of moves:
+    {'kind': 'LIN'/'CIRC', 'pts': [(x,y,z), ...], 'layer': n, 'transition': bool}.
+    Returns (start_point, moves)."""
+    moves, pos, start = [], None, None
+    layer, in_transition = 0, False
+    layer_re = re.compile(r";\s*=+\s*LAYER\s+(\d+)")
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith(";"):
+            m = layer_re.match(line)
+            if m:
+                layer = int(m.group(1))
+            if "TRANSITION" in line:
+                in_transition = True
+            continue
+        code = line.split(";")[0]
+        if code.startswith("PTP"):
+            p = _xyz_3d(code)
+            if p:
+                pos = p
+                if start is None:
+                    start = p
+        elif code.startswith("LIN") and pos is not None:
+            p = _xyz_3d(code)
+            if p:
+                moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition})
+                pos = p
+        elif code.startswith("CIRC") and pos is not None and "},{" in code:
+            via_txt, end_txt = code.split("},{", 1)
+            pv, p2 = _xyz_3d(via_txt), _xyz_3d(end_txt)
+            if pv and p2:
+                moves.append({'kind': 'CIRC', 'pts': _arc_points_3d(pos, pv, p2), 'layer': layer,
+                              'transition': in_transition})
+                pos = p2
+                in_transition = False   # a transition ends with (at most) one CIRC ...
+    # ... except the inward kind, which is CIRC + a short straight LIN into P1. That LIN is
+    # followed by the turn's own LIN in the same direction (two LINs in a row never happen
+    # inside a turn), so mark it as part of the transition.
+    for i in range(len(moves) - 2):
+        m0, m1, m2 = moves[i], moves[i + 1], moves[i + 2]
+        if m0['transition'] and m0['kind'] == 'CIRC' and m1['kind'] == 'LIN' and m2['kind'] == 'LIN':
+            d1 = _v_sub(m1['pts'][-1], m1['pts'][0])
+            d2 = _v_sub(m2['pts'][-1], m2['pts'][0])
+            l1, l2 = math.sqrt(_v_dot(d1, d1)), math.sqrt(_v_dot(d2, d2))
+            if l1 > 0 and l2 > 0 and _v_dot(d1, d2) / (l1 * l2) > 0.9999:
+                m1['transition'] = True
+    return start, moves
+
+def _nice_length(x):
+    """Round number (1, 2 or 5 x 10^k) close to x, for the axis length."""
+    if x <= 0:
+        return 1.0
+    k = 10 ** math.floor(math.log10(x))
+    for m in (1, 2, 5, 10):
+        if m * k >= x:
+            return m * k
+    return 10 * k
+
+class View3D:
+    DEFAULT_YAW, DEFAULT_PITCH = math.radians(-35), math.radians(35)
+
+    def __init__(self):
+        self.win = tk.Toplevel(root)
+        self.win.title("3D View")
+        self.win.geometry("780x620")
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        bar = tk.Frame(self.win)
+        bar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+        tk.Label(bar, text="Z exaggeration:").pack(side=tk.LEFT)
+        self.zex_var = tk.IntVar(value=1)
+        tk.Scale(bar, from_=1, to=40, orient=tk.HORIZONTAL, length=160, variable=self.zex_var,
+                 showvalue=True, command=lambda _v: self.redraw()).pack(side=tk.LEFT, padx=(0, 10))
+        self.by_layer_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="Colour by layer", variable=self.by_layer_var,
+                       command=self.redraw).pack(side=tk.LEFT, padx=(0, 10))
+        for txt, yaw, pitch in (("Iso", self.DEFAULT_YAW, self.DEFAULT_PITCH), ("Top", 0.0, math.radians(90)),
+                                ("Front", 0.0, 0.0), ("Side", math.radians(-90), 0.0)):
+            tk.Button(bar, text=txt, width=5,
+                      command=lambda y=yaw, p=pitch: self.set_view(y, p)).pack(side=tk.LEFT, padx=1)
+        tk.Button(bar, text="Reload", command=self.reload).pack(side=tk.RIGHT)
+
+        self.canvas = tk.Canvas(self.win, bg="white", highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.info = tk.Label(self.win, anchor="w", justify=tk.LEFT, fg="#555555", font=("Segoe UI", 8))
+        self.info.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=2)
+
+        c = self.canvas
+        c.bind("<Configure>", lambda e: self.redraw())
+        c.bind("<ButtonPress-1>", self._press)
+        c.bind("<B1-Motion>", self._rotate)
+        for b in ("2", "3"):
+            c.bind(f"<ButtonPress-{b}>", self._press)
+            c.bind(f"<B{b}-Motion>", self._move)
+        c.bind("<MouseWheel>", self._wheel)
+        c.bind("<Double-Button-1>", lambda e: self.reset_view())
+
+        self.reset_view(redraw=False)
+        self.reload()
+
+    # ---------- data ----------
+    def reload(self):
+        self.start, self.moves = parse_path_3d(output_text.get("1.0", tk.END))
+        pts = [p for m in self.moves for p in m['pts']] + ([self.start] if self.start else [])
+        self.pts_all = pts
+        if not pts:
+            self.redraw()
+            return
+        xs, ys, zs = [p[0] for p in pts], [p[1] for p in pts], [p[2] for p in pts]
+        self.bounds = (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+        self.center = ((self.bounds[0] + self.bounds[1]) / 2, (self.bounds[2] + self.bounds[3]) / 2,
+                       (self.bounds[4] + self.bounds[5]) / 2)
+        extent = max(self.bounds[1] - self.bounds[0], self.bounds[3] - self.bounds[2], 1e-6)
+        height = self.bounds[5] - self.bounds[4]
+        # Default: make the layer stack about 15% of the shape size so layers are visible
+        zex = 1 if height < 1e-6 else int(round(max(1.0, min(40.0, 0.15 * extent / height))))
+        self.zex_var.set(zex)
+        self.redraw()
+
+    # ---------- view ----------
+    def reset_view(self, redraw=True):
+        self.yaw, self.pitch = self.DEFAULT_YAW, self.DEFAULT_PITCH
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        if redraw:
+            self.redraw()
+
+    def set_view(self, yaw, pitch):
+        self.yaw, self.pitch = yaw, pitch
+        self.zoom, self.pan = 1.0, (0.0, 0.0)
+        self.redraw()
+
+    def _project(self, p, zex, cy_, sy_, cp_, sp_):
+        x = p[0] - self.center[0]
+        y = p[1] - self.center[1]
+        z = (p[2] - self.center[2]) * zex
+        x1 = x * cy_ - y * sy_
+        y1 = x * sy_ + y * cy_
+        return x1, y1 * sp_ + z * cp_          # screen x, screen y (up)
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("all")
+        W, H = max(c.winfo_width(), 10), max(c.winfo_height(), 10)
+        if not getattr(self, "pts_all", None):
+            c.create_text(W / 2, H / 2, text="Nothing to show yet: generate a path first, then press Reload.",
+                          fill="#777777")
+            self.info.config(text="")
+            return
+        zex = max(1, int(self.zex_var.get()))
+        cy_, sy_ = math.cos(self.yaw), math.sin(self.yaw)
+        cp_, sp_ = math.cos(self.pitch), math.sin(self.pitch)
+        # scale from the bounding sphere so rotating never pushes the shape out of view
+        rad = max(math.sqrt((p[0] - self.center[0]) ** 2 + (p[1] - self.center[1]) ** 2 +
+                            ((p[2] - self.center[2]) * zex) ** 2) for p in self.pts_all) or 1.0
+        s = 0.45 * min(W, H) / rad * self.zoom
+        ox, oy = W / 2 + self.pan[0], H / 2 + self.pan[1]
+        def scr(p):
+            u, v = self._project(p, zex, cy_, sy_, cp_, sp_)
+            return ox + s * u, oy - s * v
+
+        # Axis cross at the lowest corner of the path
+        b = self.bounds
+        L = _nice_length(0.2 * max(b[1] - b[0], b[3] - b[2], 1e-6))
+        o = (b[0], b[2], b[4])
+        o_s = scr(o)
+        for d, col, name in (((L, 0, 0), "#d62728", "X"), ((0, L, 0), "#2ca02c", "Y"),
+                             ((0, 0, L / zex), "#1f77b4", "Z")):
+            e_s = scr(_v_add(o, d))
+            c.create_line(*o_s, *e_s, fill=col, width=2, arrow=tk.LAST)
+            c.create_text(e_s[0] + 8, e_s[1] - 8, text=name, fill=col, font=("Segoe UI", 9, "bold"))
+
+        # Path
+        by_layer = self.by_layer_var.get()
+        for m in self.moves:
+            if m['transition']:
+                col = TRANSITION_COLOR_3D
+            elif by_layer:
+                col = LAYER_COLORS_3D[m['layer'] % len(LAYER_COLORS_3D)]
+            else:
+                col = "blue"
+            coords = []
+            for p in m['pts']:
+                coords.extend(scr(p))
+            c.create_line(*coords, fill=col, width=2 if m['transition'] else 1)
+
+        # Start (green) and end (red) markers
+        for p, col in ((self.start, "#2ca02c"), (self.moves[-1]['pts'][-1] if self.moves else None, "#d62728")):
+            if p:
+                x, y = scr(p)
+                c.create_oval(x - 4, y - 4, x + 4, y + 4, fill=col, outline="")
+
+        n_layers = len(set(m['layer'] for m in self.moves)) if self.moves else 0
+        n_tr = sum(1 for m in self.moves if m['transition'])
+        self.info.config(text=(
+            f"{len(self.moves)} moves ({n_tr} in transitions), {n_layers} layer(s), Z {b[4]:.1f} to {b[5]:.1f} mm   |   "
+            f"axes: X/Y {L:g} mm, Z {L / zex:g} mm (Z shown x{zex})   |   green = start, red = end\n"
+            f"Left-drag: rotate   |   Right-drag: move   |   Wheel: zoom   |   Double-click: reset view"))
+
+    # ---------- mouse ----------
+    def _press(self, e):
+        self._last = (e.x, e.y)
+
+    def _rotate(self, e):
+        dx, dy = e.x - self._last[0], e.y - self._last[1]
+        self._last = (e.x, e.y)
+        self.yaw -= math.radians(dx * 0.5)
+        self.pitch = max(math.radians(-90), min(math.radians(90), self.pitch + math.radians(dy * 0.5)))
+        self.redraw()
+
+    def _move(self, e):
+        dx, dy = e.x - self._last[0], e.y - self._last[1]
+        self._last = (e.x, e.y)
+        self.pan = (self.pan[0] + dx, self.pan[1] + dy)
+        self.redraw()
+
+    def _wheel(self, e):
+        f = 1.2 if e.delta > 0 else 1 / 1.2
+        W, H = self.canvas.winfo_width(), self.canvas.winfo_height()
+        mx, my = e.x - W / 2, e.y - H / 2          # keep the point under the mouse in place
+        self.pan = (mx - (mx - self.pan[0]) * f, my - (my - self.pan[1]) * f)
+        self.zoom *= f
+        self.redraw()
+
+    def close(self):
+        global _view3d
+        _view3d = None
+        self.win.destroy()
+
+_view3d = None
+
+def open_3d_view(event=None):
+    """Open the 3D view window (or bring it to the front and reload it)."""
+    global _view3d
+    if not output_text.get("1.0", tk.END).strip():
+        messagebox.showinfo("3D View", "Nothing to show yet. Generate a base or run Automate first.")
+        return
+    if _view3d is not None and _view3d.win.winfo_exists():
+        _view3d.reload()
+        _view3d.win.lift()
+        return
+    _view3d = View3D()
+
 root = tk.Tk()
 root.title("Cuboidal KRL Code Generator")
 
@@ -1814,6 +2133,7 @@ functions_menu.add_separator()
 functions_menu.add_command(label="Auto‑Generate Base\t (Ctrl+Shift+G)", command=open_generate_popup)
 functions_menu.add_separator()
 functions_menu.add_command(label="Fit Canvas to Drawing\t (double-click canvas)", command=fit_view)
+functions_menu.add_command(label="3D View\t (Ctrl+Shift+D)", command=open_3d_view)
 
 functions_mbtn.configure(menu=functions_menu)
 functions_mbtn.grid(row=8, column=4, padx=10, pady=8, sticky="ew")
@@ -1828,6 +2148,7 @@ redo_icon_btn.grid(row=8, column=6, padx=(0, 10), pady=8, sticky="w")
 root.bind_all("<Control-Shift-A>", lambda e: open_approach_popup())
 root.bind_all("<Control-Shift-C>", lambda e: change_center())
 root.bind_all("<Control-Shift-G>", lambda e: open_generate_popup())
+root.bind_all("<Control-Shift-D>", open_3d_view)
 
 ## Remove inline help notebook; we will use top-level Help tab
 
@@ -1932,8 +2253,12 @@ h_scrollbar.grid(row=4, column=4, sticky='ew')
 # Configure the canvas to use the scrollbars
 canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
-# Canvas zoom: mouse wheel zooms around the pointer, double-click fits the whole drawing
+# Canvas navigation: wheel zooms around the pointer, left-drag moves the view,
+# double-click fits the whole drawing
 canvas.bind("<MouseWheel>", zoom_canvas)
+canvas.bind("<ButtonPress-1>", start_pan)
+canvas.bind("<B1-Motion>", do_pan)
+canvas.bind("<ButtonRelease-1>", end_pan)
 canvas.bind("<Double-Button-1>", fit_view)
 
 # Removed standalone Alternate Layer Direction checkbox (moved into Functions menu)
