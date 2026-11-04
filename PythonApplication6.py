@@ -10,6 +10,7 @@ import subprocess
 
 import krl_export   # shared header / TOOL / BASE / C_DIS / DEF-name export
 import path_model as pm   # move types, KRL line formatting/parsing, 3D geometry
+import shapes            # base loops (rounded rectangle) and the turn offset
 
 # Variables to store the points
 points = []
@@ -712,8 +713,6 @@ def automate():
     points = [list(point) for point in points]
     points_circ = [list(point) for point in points_circ]
 
-    e = -e
-
     print("Automate action executed with values:")
     print(f"E: {e}, W: {w}, Turns: {turns}, Layers: {layers}")
 
@@ -721,7 +720,8 @@ def automate():
     automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg)
 
 def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
-    """New alternating spiral automation function"""
+    """Alternating spiral: (layers+1) layers of (turns+1) concentric turns.
+    e = in-plane step between turns (mm, outward), w = Z step between layers (mm)."""
     global points, points_circ, motion_commands, current_a_angle
     base_motion_commands = copy.deepcopy(motion_commands)
 
@@ -729,14 +729,8 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
     # Structure: saved_points[layer][turn] = {'points': [...], 'points_circ': [...], 'motion_commands': [...]}
     saved_points = {}
     
-    # Calculate value for Dummy CIRC before OG point
-    dummy_circ_y = ((points[1][1] + points_circ[1][1]) / 2) - (1.4 * e)
-    dummy_circ_x = ((points[0][0] + points[4][0]) / 2) - e
-    
     points_initiale = copy.deepcopy(points)
     points_circular_initiale = copy.deepcopy(points_circ)
-    dummy_x_reset = copy.deepcopy(dummy_circ_x)
-    dummy_y_reset = copy.deepcopy(dummy_circ_y)
     
     # First, generate all layers normally and save the points
     for layer in range(layers + 1):
@@ -746,8 +740,6 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
         # Reset points for this layer
         points = copy.deepcopy(points_initiale)
         points_circ = copy.deepcopy(points_circular_initiale)
-        dummy_circ_x = copy.deepcopy(dummy_x_reset)
-        dummy_circ_y = copy.deepcopy(dummy_y_reset)
 
         # Apply Z offset for this layer
         if layer > 0:
@@ -767,50 +759,17 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
         for turn in range(turns + 1):
             print(f"  Generating turn: {turn}")
             
-            # Create a copy of current points for this turn
-            turn_points = copy.deepcopy(points)
-            turn_points_circ = copy.deepcopy(points_circ)
             turn_motion_commands = copy.deepcopy(motion_commands)
-            
-            # Apply E offsets for this turn
             if turn > 0:
-                # Apply the same E offset logic as before
-                turn_points[0][1] -= e * turn
+                # Turn t = the base loop moved outward by e*t: every point moves along its
+                # outward normal, so edges shift by e*t and each fillet keeps its centre and
+                # grows its radius by e*t (stays tangent). Generic: no point indices, any
+                # base order / direction (see shapes.offset_loop).
+                turn_points, turn_points_circ = shapes.offset_loop(points, points_circ, motion_commands, e * turn)
+            else:
+                turn_points = copy.deepcopy(points)
+                turn_points_circ = copy.deepcopy(points_circ)
 
-                # Apply E offsets to other points based on motion commands
-                i = 1
-                j = 0
-                for k in motion_commands:
-                    if k == "LIN":
-                        if i == 1:
-                            turn_points[i][1] -= e * turn
-                        elif i == 2:
-                            turn_points[i][0] += e * turn
-                        elif i == 3:
-                            turn_points[i][1] += e * turn
-                        elif i == 4:
-                            turn_points[i][0] -= e * turn
-                        i += 1
-                    elif k == "CIRC":
-                        # The via point sits at 45° on the fillet. Offsetting the edges by
-                        # d = e*turn grows the fillet radius by d around the same centre,
-                        # so the via point must move d/sqrt(2) in X and in Y (not d/2),
-                        # otherwise the arc is no longer tangent to the edges.
-                        via_shift = e * turn * (2 ** -0.5)
-                        if j == 0:
-                            turn_points_circ[j][0] += via_shift
-                            turn_points_circ[j][1] -= via_shift
-                            turn_points_circ[j + 1][0] += e * turn
-                        elif j == 2:
-                            turn_points_circ[j][0] += via_shift
-                            turn_points_circ[j][1] += via_shift
-                            turn_points_circ[j + 1][1] += e * turn
-                        elif j == 4:
-                            turn_points_circ[j][0] -= via_shift
-                            turn_points_circ[j][1] += via_shift
-                            turn_points_circ[j + 1][0] -= e * turn
-                        j += 2
-            
             # Save this turn's data
             saved_points[layer][turn] = {
                 'points': turn_points,
@@ -1166,11 +1125,12 @@ def clear_for_auto():
     output_text.delete("1.0", tk.END)
 
 def clear_all():
-    global points, points_circ, motion_commands, current_a_angle
+    global points, points_circ, motion_commands, orientations, current_a_angle
     _push_undo_snapshot()
     points = []
     points_circ = []
     motion_commands = []
+    orientations = []
     current_a_angle = 180.0  # Reset A angle to default
     canvas.delete("all")
     reset_view_zoom()
@@ -1503,125 +1463,61 @@ def open_generate_popup():
     tk.Label(popup, text="Tool Height (Z offset):").grid(row=5, column=0, padx=20)
     th_entry     = tk.Entry(popup); th_entry.grid(row=5, column=1, padx=50, pady=30)
 
+    tk.Label(popup, text="Corner Radius (blank = auto):").grid(row=6, column=0, padx=20)
+    radius_entry = tk.Entry(popup); radius_entry.grid(row=6, column=1, padx=50, pady=30)
+
     def generate_points():
+        global points, points_circ, motion_commands, orientations
         try:
-            _push_undo_snapshot()
             Xr = float(xr_entry.get())
             Yr = float(yr_entry.get())
             Zr = float(zr_entry.get())
             L  = float(length_entry.get())
             W  = float(width_entry.get())
             Th = float(th_entry.get())
+            r_text = radius_entry.get().strip()
+            r = float(r_text) if r_text else None
         except ValueError:
             messagebox.showerror("Input Error", "Please enter valid numbers")
             return
+        if L <= 0 or W <= 0:
+            messagebox.showerror("Input Error", "Length and width must be greater than 0.")
+            return
 
-        # Derived constants
+        # Corner radius: given, or automatic (15% of the shorter side, clamped to [2, min/3])
+        if r is None:
+            r = shapes.auto_corner_radius(L, W)
+        r_max = min(L, W) / 2
+        if not (0 < r <= r_max):
+            messagebox.showerror(
+                "Input Error",
+                f"Corner radius must be greater than 0 and at most half the shorter side "
+                f"({r_max:g} mm).\n\nUsed radius: {r:g} mm.")
+            return
+
         Z = Zr + Th
         A, B, C = 180.0, 0.0, 180.0
 
-        # Corner rounding radius (variable): 15% of min(L,W), with limits
-        min_edge = max(min(L, W), 1.0)
-        r_base = 0.15 * min_edge
-        # Clamp radius to avoid self-intersection or vanishing arcs
-        r = max(2.0, min(r_base, min_edge / 3.0))
-
-        # Precompute rectangle edges and useful centers for arcs
-        top_y    = Yr + W/2
-        bottom_y = Yr - W/2
-        left_x  = Xr - L/2
-        right_x = Xr + L/2
-
-        # Key points along edges (approach points r from each true corner)
-        start_top_right = (right_x - r, top_y)           # 1
-        top_left_approach = (left_x + r, top_y)          # 2
-        left_top_approach = (left_x, top_y - r)         # 4 (end of first CIRC)
-        left_bottom_approach = (left_x, bottom_y + r)   # 5
-        bottom_left_approach = (left_x + r, bottom_y)   # 7 (end of second CIRC)
-        bottom_right_approach = (right_x - r, bottom_y) # 8
-        right_bottom_approach = (right_x, bottom_y + r)  # 10 (end of third CIRC)
-        right_top_approach = (right_x, top_y - r)        # 11
-
-        # Arc centers for 90° fillets
-        center_TL = (left_x + r, top_y - r)
-        center_BL = (left_x + r, bottom_y + r)
-        center_BR = (right_x - r, bottom_y + r)
-
-        # 45° midpoints on each arc (via points for CIRC)
-        inv_sqrt2 = 2 ** -0.5
-        mid_TL = (center_TL[0] - r*inv_sqrt2, center_TL[1] + r*inv_sqrt2)  # from top->left
-        mid_BL = (center_BL[0] - r*inv_sqrt2, center_BL[1] - r*inv_sqrt2)  # from left->bottom (corrected)
-        mid_BR = (center_BR[0] + r*inv_sqrt2, center_BR[1] - r*inv_sqrt2)  # from bottom->right
-
-        # Clear all existing data before generating new
+        # Clear everything (this takes the one undo snapshot), then build the base loop
         clear_all()
+        points, points_circ, motion_commands = shapes.rounded_rect_base(Xr, Yr, Z, L, W, r)
+        orientations = [(A, B, C)] * (len(points) + len(points_circ))
 
-        # --- Build lists consistent with manual/import flows ---
-        # PTP 1
-        points.append((start_top_right[0], start_top_right[1], Z))
-        orientations.append((A, B, C))
-        emit_ptp((start_top_right[0], start_top_right[1], Z), (A, B, C))
-
-        # LIN 2 (top edge toward TL)
-        points.append((top_left_approach[0], top_left_approach[1], Z))
-        orientations.append((A, B, C))
-        motion_commands.append("LIN")
-        emit_lin((top_left_approach[0], top_left_approach[1], Z), (A, B, C))
-
-        # CIRC 3–4 (round TL corner)
-        points_circ.extend([
-            (mid_TL[0], mid_TL[1], Z),
-            (left_top_approach[0], left_top_approach[1], Z)
-        ])
-        # Append two orientation entries for CIRC (middle and end)
-        orientations.append((A, B, C))
-        orientations.append((A, B, C))
-        motion_commands.append("CIRC")
-        emit_circ((mid_TL[0], mid_TL[1], Z), (left_top_approach[0], left_top_approach[1], Z), (A, B, C))
-
-        # LIN 5 (left edge toward BL)
-        points.append((left_bottom_approach[0], left_bottom_approach[1], Z))
-        orientations.append((A, B, C))
-        motion_commands.append("LIN")
-        emit_lin((left_bottom_approach[0], left_bottom_approach[1], Z), (A, B, C))
-
-        # CIRC 6–7 (round BL corner)
-        points_circ.extend([
-            (mid_BL[0], mid_BL[1], Z),
-            (bottom_left_approach[0], bottom_left_approach[1], Z)
-        ])
-        orientations.append((A, B, C))
-        orientations.append((A, B, C))
-        motion_commands.append("CIRC")
-        emit_circ((mid_BL[0], mid_BL[1], Z), (bottom_left_approach[0], bottom_left_approach[1], Z), (A, B, C))
-
-        # LIN 8 (bottom edge toward BR)
-        points.append((bottom_right_approach[0], bottom_right_approach[1], Z))
-        orientations.append((A, B, C))
-        motion_commands.append("LIN")
-        emit_lin((bottom_right_approach[0], bottom_right_approach[1], Z), (A, B, C))
-
-        # CIRC 9–10 (round BR corner)
-        points_circ.extend([
-            (mid_BR[0], mid_BR[1], Z),
-            (right_bottom_approach[0], right_bottom_approach[1], Z)
-        ])
-        orientations.append((A, B, C))
-        orientations.append((A, B, C))
-        motion_commands.append("CIRC")
-        emit_circ((mid_BR[0], mid_BR[1], Z), (right_bottom_approach[0], right_bottom_approach[1], Z), (A, B, C))
-
-        # LIN 11 (right edge toward TR)
-        right_top = (right_top_approach[0], right_top_approach[1], Z)
-        points.append(right_top)
-        orientations.append((A, B, C))
-        motion_commands.append("LIN")
-        emit_lin((right_top[0], right_top[1], Z), (A, B, C))
+        # Preview: PTP P1, then the base moves in order (LIN / CIRC)
+        emit_ptp(points[0], (A, B, C))
+        i, j = 1, 0
+        for k in motion_commands:
+            if k == "LIN":
+                emit_lin(points[i], (A, B, C))
+                i += 1
+            else:
+                emit_circ(points_circ[j], points_circ[j + 1], (A, B, C))
+                j += 2
 
         popup.destroy()
         visualize_cuboid()
 
-    tk.Button(popup, text="Generate", command=generate_points).grid(row=6, column=0, columnspan=2, pady=10)
+    tk.Button(popup, text="Generate", command=generate_points).grid(row=7, column=0, columnspan=2, pady=10)
 
 
 def instructions():

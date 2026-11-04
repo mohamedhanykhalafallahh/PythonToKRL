@@ -12,6 +12,7 @@ Exit code 0 = all identical, 1 = differences/errors.
 """
 import contextlib
 import io
+import math
 import os
 import runpy
 import sys
@@ -34,6 +35,8 @@ CASES = {
     "REG_600x80_moved": dict(base=(450, -120, 30, 600, 80, 2), auto=(1, 1.5, 4, 1), tilt=15, orient=True, cdis=True),
     "REG_tilt_off":     dict(base=(535, 10, 65, 300, 150, 0), auto=(2, 2, 2, 1), tilt=20, orient=False, cdis=True),
     "REG_cdis_off":     dict(base=(535, 10, 65, 300, 150, 0), auto=(2, 2, 2, 1), tilt=20, orient=True,  cdis=False),
+    # base may carry a 7th value: the corner radius (blank = automatic 15%)
+    "REG_r40":          dict(base=(535, 10, 65, 300, 150, 0, 40), auto=(2, 2, 3, 1), tilt=20, orient=True, cdis=True),
 }
 
 
@@ -182,6 +185,55 @@ def check_path_model():
     return bad
 
 
+def _reverse_loop(points, points_circ, motion_commands):
+    """Same loop travelled the other way (clockwise), starting at the old last point."""
+    seq, i, j = [("P", points[0])], 1, 0
+    for k in motion_commands:
+        if k == "LIN":
+            seq.append(("L", points[i])); i += 1
+        else:
+            seq += [("V", points_circ[j]), ("E", points_circ[j + 1])]; j += 2
+    seq.reverse()
+    P, C, M, idx = [seq[0][1]], [], [], 1
+    while idx < len(seq):
+        if seq[idx][0] == "V":
+            C += [seq[idx][1], seq[idx + 1][1]]; M.append("CIRC"); idx += 2
+        else:
+            P.append(seq[idx][1]); M.append("LIN"); idx += 1
+    return P, C, M
+
+
+def check_shapes():
+    """shapes.offset_loop: for CCW and CW rounded rectangles (incl. the r = L/2 stadium)
+    every side moves out by exactly d and every arc keeps its centre with radius r + d."""
+    import shapes
+    bad = []
+    for (L, W, r) in ((300, 150, 22.5), (150, 300, None), (20, 20, None), (4, 633, None), (600, 80, 40)):
+        r = shapes.auto_corner_radius(L, W) if r is None else r
+        base = shapes.rounded_rect_base(535, 10, 65, L, W, r)
+        for label, loop in (("CCW", base), ("CW", _reverse_loop(*base))):
+            P0, C0, M = loop
+            for d in (1.0, 2.0, 7.5):
+                P, C = shapes.offset_loop(P0, C0, M, d)
+                xs0 = [p[0] for p in P0 + C0]; ys0 = [p[1] for p in P0 + C0]
+                xs = [p[0] for p in P + C]; ys = [p[1] for p in P + C]
+                shifts = (min(xs0) - min(xs), max(xs) - max(xs0), min(ys0) - min(ys), max(ys) - max(ys0))
+                if max(abs(s - d) for s in shifts) > 1e-9:
+                    bad.append("%dx%d %s d=%g: sides moved by %s" % (L, W, label, d, shifts))
+                # arcs: start = previous point; radius must be r + d
+                prev, i, j = P[0], 1, 0
+                for k in M:
+                    if k == "LIN":
+                        prev = P[i]; i += 1
+                        continue
+                    c = shapes._circumcentre(prev, C[j], C[j + 1])
+                    R = math.hypot(prev[0] - c[0], prev[1] - c[1])
+                    if abs(R - (r + d)) > 1e-9:
+                        bad.append("%dx%d %s d=%g: arc radius %.9f, expected %g" % (L, W, label, d, R, r + d))
+                    prev = C[j + 1]; j += 2
+    return bad
+
+
 def check_invalid_name_not_saved(tmpdir):
     """Exporting to an invalid KRL name must show an error and write nothing."""
     errors = []
@@ -251,6 +303,7 @@ def main():
                     failed += 1
         for label, check in (("krl_export unit checks", check_krl_export),
                              ("path_model round trip / 3D path", check_path_model),
+                             ("shapes offset (CCW + CW, exact sides and radii)", check_shapes),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

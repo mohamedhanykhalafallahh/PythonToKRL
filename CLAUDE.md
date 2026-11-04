@@ -36,6 +36,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
 | `krl_export.py` | Shared `.src` export (no tkinter): header, BASE/TOOL/speed profile (`ExportSettings`, `NOUVTETE`), `add_c_dis`, DEF-name check, `build_program`. Used by App6; App5 and the cylinder app are to follow. |
 | `path_model.py` | Path model (no tkinter): `Pose`, `Ptp`/`Lin`/`Circ`/`Comment`/`Raw` items with `to_krl()`; `fmt()` = the ONE number formatter; `parse_krl` (text → items, exact round trip for all app output, unknown lines kept as `Raw`, case-insensitive); `path_3d` (items → 3D polylines with layer/transition flags) and `path_length`. |
+| `shapes.py` | Shape geometry (no tkinter): `rounded_rect_base`, `auto_corner_radius`, and the generic turn offset `offset_loop` (outward normals from the geometry; any order or direction). The cylinder/circle base goes here next. |
 | `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`, plus `krl_export` unit checks and an invalid-file-name check. Run after every change; `--update` only when an output change is intended. Line endings are ignored (git `autocrlf`). |
 
 ## How PythonApplication6 works
@@ -51,12 +52,12 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 Fixed order: `PTP P1 → LIN P2 → CIRC P3,P4 → LIN P5 → CIRC P6,P7 → LIN P8 → CIRC P9,P10 → LIN P11`. That is 4 edges and 3 rounded corners. The 4th corner (P11 → P1) is closed by a transition CIRC.
 Ways to build it:
 - Manually: "Add Point" plus the CIRC popup.
-- **Auto-Generate Base** (`open_generate_popup`): centre Xr/Yr/Zr, length, width, tool height. Corner radius r = 15% of min(L, W), clamped to [2, min/3]. The via point sits at 45° on each fillet. Order: start top-right, then go counter-clockwise (top edge → TL → left → BL → bottom → BR → right).
+- **Auto-Generate Base** (`open_generate_popup` → `shapes.rounded_rect_base`): centre Xr/Yr/Zr, length, width, tool height, corner radius (blank = automatic: `shapes.auto_corner_radius` = 15% of min(L, W), clamped to [2, min/3]; a given radius must be in (0, min(L, W)/2]). The via point sits at 45° on each fillet. Order: start top-right, then go counter-clockwise (top edge → TL → left → BL → bottom → BR → right).
 - Import/Save `.txt`: lines `X Y Z A B C` (origin), `X Y Z A B C LIN`, `x1 y1 z1 x2 y2 z2 A B C CIRC`.
 - "Change Center" offsets every point by (Xc, Yc, Zc).
 
 ### Stage 2: Automate (`automate_alternating_spiral`)
-- Turn t: each edge is offset outward by `E*t` (via points move by E*t/2 in both X and Y). `e` is negated in `automate()`.
+- Turn t: `shapes.offset_loop(base, E*t)` moves every point by `E*t` along its outward normal. Edges shift by E*t; each fillet keeps its centre and its radius grows by E*t, so it stays tangent. The normals come from the geometry (edge perpendicular, arc radial, CW/CCW from the signed area, snapped to exact 0/±1/±√½), so any base order or direction works. `e` is positive (no more negation).
 - Layer l: Z += `W*l`.
 - Even layers spiral outward (T0 → Tn); odd layers spiral inward (Tn → T0), following `Sequence.txt`.
 - Turn and layer changes use `create_circ_transition`: a CIRC whose via point is offset perpendicular to the jump by 20% of its length (drawn purple on the canvas).
@@ -79,7 +80,7 @@ KRL / robot level:
 - [x] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).
 
 Logic:
-- [ ] Turn offsets are hardcoded by index (`i==1..4`, `j==0,2,4`) and only correct for the Auto-Generate (CCW from top-right) order; the manual order in Help differs.
+- [x] Turn offsets were hardcoded by index (`i==1..4`, `j==0,2,4`) and only correct for the Auto-Generate (CCW from top-right) order. Now generic (`shapes.offset_loop`), step 4.
 - [ ] `range(turns + 1)` / `range(layers + 1)`: entering N gives N+1 turns/layers.
 - [x] After Automate, the globals hold the last turn, so a second Automate compounds offsets.
 - [ ] The final closing CIRC (last turn back to pt1, from Sequence.txt) is not generated.
@@ -144,5 +145,17 @@ Minor:
     - The 3D view uses `pm.path_3d(pm.parse_krl(text))`. App6's own parser, `_xyz_3d`, `_arc_points_3d` and the vector helpers were removed (93 lines), as was the unused `format_point`.
     - Verified: regression ALL IDENTICAL. All 18 golden files round-trip byte-exact. Old vs new 3D parser give identical moves on all goldens and on hand edits (the only difference: lowercase `lin` is now read, which is correct KRL). Manual flows (Add Point, CIRC popup, Approach, Comment, base preview) give identical text compared with the previous commit. The 3D window opens and draws (51 moves, 9 transitions). The app launches from another folder.
     - The regression test now also checks path_model (round trip, continuous 3D path with one move per LIN/CIRC, hand-edit tolerance). Arc start points match the previous end only up to about 4e-15 mm (float noise), so the check uses a 1e-9 tolerance.
-  - Next: step 4, parametric cuboid generator (no tkinter; returns items; turn t = rounded rectangle L+2d, W+2d, r+d).
+  - Step 3 committed as bc623ec.
+  - Step 4 done: `shapes.py` (no tkinter): `auto_corner_radius`, `rounded_rect_base` (the popup formulas, moved), `loop_orientation`, `loop_normals`, `offset_loop`.
+    - Automate: the hardcoded `i/j` offset table and the unused `dummy_circ_*` lines were removed, and `e` is no longer negated. Each turn is `offset_loop(base, E*t)`.
+    - Auto-Generate: geometry from `shapes`, a new "Corner Radius (blank = auto)" field (row 6, Generate button now row 7), validation (L, W > 0; 0 < r ≤ min/2), and a single undo snapshot (it used to push one before validating, plus one in `clear_all`).
+    - `clear_all` now also empties `orientations` (it used to grow with every Generate).
+    - Verified:
+      - The new offset is bit-identical to the old table on 2004 rectangles × 5 E × 6 turns. One bug was found and fixed on the way: zero-length edges (the r = L/2 "stadium") now take the normal of the adjacent arc or the other edge end.
+      - Regression ALL IDENTICAL.
+      - Explicit r = 40: radii 40/42/44/46 exactly, tangent.
+      - Invalid inputs show an error and leave the state unchanged.
+      - A clockwise base now grows exactly d on every side, with radius r + d and tangent; the old table did not grow it at all.
+    - Regression additions: case `REG_r40` (3 new golden files; the existing goldens are unchanged) and `check_shapes` (CCW + CW, including the stadium).
+  - Next: step 5, delete the variant files (`- Copie`, `- Copie (2)`, `- large curve`, `- Backup`) and turn their differences into options (needs the owner's OK on which options matter: tilt clamp 0, TCP profile, Zr default).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).
