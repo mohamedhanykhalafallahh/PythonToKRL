@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import cylinder
+import export_settings_dialog
 import krl_export
 import path_model as pm
 import view3d
@@ -103,6 +104,9 @@ class CylinderApp:
         for col, (text, cmd) in enumerate((("Generate", self.generate), ("3D View", self.open_3d_view),
                                            ("Export KRL Code", self.export), ("Clear", self.clear))):
             tk.Button(buttons, text=text, command=cmd, width=13).grid(row=0, column=col, padx=3, pady=3)
+        tk.Button(buttons, text="Export Settings (TOOL/BASE profiles)...",
+                  command=lambda: export_settings_dialog.open_dialog(self.root)).grid(
+            row=1, column=0, columnspan=4, sticky="ew", padx=3, pady=(0, 3))
 
         right = tk.Frame(root)
         right.grid(row=1, column=1, sticky="n", padx=10, pady=8)
@@ -198,8 +202,10 @@ class CylinderApp:
                                  "'%s' is not a valid KRL program name.\n\n%s\n\nNothing was saved."
                                  % (name, krl_export.PROGRAM_NAME_RULE))
             return False
-        code = krl_export.build_program(name, self.body_text(), krl_export.DEFAULT_SETTINGS,
-                                        approximate=self.c_dis_var.get())
+        settings, profile_error = krl_export.active_settings()
+        if profile_error:
+            messagebox.showwarning("Export Settings", profile_error)
+        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
         with open(path, "w") as f:
             f.write(code)
         messagebox.showinfo("KRL Code Exported", "The KRL code has been exported successfully.")

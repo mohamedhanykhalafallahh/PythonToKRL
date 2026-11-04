@@ -12,6 +12,7 @@ import krl_export   # shared header / TOOL / BASE / C_DIS / DEF-name export
 import path_model as pm   # move types, KRL line formatting/parsing, 3D geometry
 import shapes            # base loops (rounded rectangle) and the turn offset
 import view3d            # 3D view window (shared)
+import export_settings_dialog   # export profiles (TOOL/BASE/speeds/decimals) dialog
 
 # Variables to store the points
 points = []
@@ -1236,8 +1237,10 @@ def save_krl_code():
 
     # Header (BASE/TOOL/speed/approximation) + moves (+ C_DIS unless switched off) + END,
     # all from the shared krl_export module
-    full_code = krl_export.build_program(file_name, krl_code, krl_export.DEFAULT_SETTINGS,
-                                         approximate=c_dis_var.get())
+    settings, profile_error = krl_export.active_settings()
+    if profile_error:
+        messagebox.showwarning("Export Settings", profile_error)
+    full_code = krl_export.build_program(file_name, krl_code, settings, approximate=c_dis_var.get())
 
     with open(file_path, "w") as file:
         file.write(full_code)
@@ -1688,6 +1691,9 @@ functions_menu.add_separator()
 functions_menu.add_command(label="Fit Canvas to Drawing\t (double-click canvas)", command=fit_view)
 functions_menu.add_separator()
 functions_menu.add_command(label="3D View\t (Ctrl+Shift+D)", command=open_3d_view)
+functions_menu.add_separator()
+functions_menu.add_command(label="Export Settings (TOOL/BASE profiles)...",
+                           command=lambda: export_settings_dialog.open_dialog(root))
 
 functions_mbtn.configure(menu=functions_menu)
 functions_mbtn.grid(row=8, column=4, padx=10, pady=8, sticky="ew")

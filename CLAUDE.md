@@ -33,7 +33,9 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | `PythonApplication1–5.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"). |
 | `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Cylindrical opens App7, Free form opens App5. |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
-| `krl_export.py` | Shared `.src` export (no tkinter): header, BASE/TOOL/speed profile (`ExportSettings`, `NOUVTETE`), `add_c_dis`, DEF-name check, `build_program`. Used by App6; App5 and the cylinder app are to follow. |
+| `krl_export.py` | Shared `.src` export (no tkinter): header, `ExportSettings` profiles (built-in `NOUVTETE`; JSON load/save, `active_settings`), `add_c_dis`, rounding, DEF-name check, `build_program`. Used by App6 and App7 (App5 not yet). |
+| `export_profiles.json` | The export profiles (active + named profiles). Edited through the Export Settings dialog. Currently only "NouvTete". |
+| `export_settings_dialog.py` | Export Settings dialog (TOOL/BASE, motion values, decimals, header comments; Save / Save as New / Delete), shared by both apps. |
 | `path_model.py` | Path model (no tkinter): `Pose`, `Ptp`/`Lin`/`Circ`/`Comment`/`Raw` items with `to_krl()`; `fmt()` = the ONE number formatter; `parse_krl` (text → items, exact round trip for all app output, unknown lines kept as `Raw`, case-insensitive); `path_3d` (items → 3D polylines with layer/transition flags) and `path_length`. |
 | `shapes.py` | Shape geometry (no tkinter): `rounded_rect_base`, `auto_corner_radius`, and the generic turn offset `offset_loop` (outward normals from the geometry; any order or direction). The cylinder/circle base goes here next. |
 | `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`, plus `krl_export` unit checks and an invalid-file-name check. Run after every change; `--update` only when an output change is intended. Line endings are ignored (git `autocrlf`). |
@@ -67,7 +69,25 @@ Ways to build it:
 - C = interface value.
 
 ### Export (`save_krl_code` → `krl_export.build_program`)
-`save_krl_code` only does the file dialog and the error message. The `.src` text comes from the shared module `krl_export.py`: the standard KUKA header (INI folds, PTP HOME), then the settings of an `ExportSettings` profile (currently `NOUVTETE` = `DEFAULT_SETTINGS`: `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}` (assumed), `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` and accelerations), then the moves (with `add_c_dis` unless switched off) and `END`. The `DEF` name is the file name and must pass `is_valid_program_name`. To change a TCP, speed or header line, edit the profile in `krl_export.py`, not the apps.
+`save_krl_code` (and App7's `export_to`) only handle the file dialog and the messages. The `.src` text comes from `krl_export.build_program(name, body, settings, approximate)`, which writes:
+1. The standard KUKA header (INI folds, PTP HOME).
+2. `; Export profile: <name>`.
+3. The profile's BASE/TOOL/approximation/speed/acceleration lines.
+4. The moves, rounded to the profile's `decimals` (motion lines only; comments and other lines are untouched; hand-typed lines are rounded too), with `add_c_dis` unless switched off.
+5. `END`.
+
+The `DEF` name is the file name and must pass `is_valid_program_name`.
+
+**Export profiles:**
+- They live in `export_profiles.json` (repo root, synced by git): `{"active": name, "profiles": {name: {...}}}`.
+- Edit them with **Export Settings** (App6: Functions menu; App7: button), from `export_settings_dialog.py`.
+- **Save** stores the profile and makes it active; **Save as New** and **Delete** are also there (the last profile can't be deleted).
+- Export always uses the active profile (`krl_export.active_settings()`).
+- A missing file gives the built-in `NOUVTETE` silently. A broken or invalid file gives the built-in plus a warning.
+- Current NouvTete values: `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}` (assumed), `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` (m/s), 100% accelerations, decimals 3.
+- To change a TCP, speed or decimals, use the dialog. Change the built-in `NOUVTETE` in `krl_export.py` only for the fallback/test default.
+
+**Regression test:** it sets `krl_export.PROFILES_PATH` to a non-existent temp file, so it always uses the built-in profile, never the user's file.
 
 ## How PythonApplication7 (cylinder) works
 Decisions from the owner (2026-11-04):
@@ -157,7 +177,7 @@ Minor:
   - Priority 1, shared core, step by step with a check after each step: (1) regression test; (2) `krl_export.py` (header, TOOL/BASE, speed, C_DIS, DEF check, JSON tool/base profiles) shared by all apps (App5 currently writes `TOOL_DATA[1] {Z 20}`); (3) `path_model.py` (segment list; the text box and the 3D view become views of it); (4) parametric cuboid generator (turn t = rounded rectangle L+2d, W+2d, r+d), which removes the hardcoded index offsets; corner radius as an input; (5) delete the variant files and turn their differences into options.
   - Priority 2, cylinder (App7 is only a stub with invalid KRL): 4 quarter CIRCs per loop (2 halves give an ambiguous 180° A change; many LINs give facets), with an optional helix (Z rising through each loop, no seam). Concentric turns reuse the cuboid transitions.
   - Priority 3, UI: parametric panel as the main view, pre-export checks (length, time, reach, warnings), JSON project files, A arrows in the 3D view, later a PyInstaller exe. Keep Tkinter.
-  - Later, a deliberate output change: round coordinates (they are currently written like `391.59009742330267`).
+  - Later, a deliberate output change: round coordinates (they were written like `391.59009742330267`). Done 2026-11-04, see Priority 3 step 2.
   - Step 1 done: `tests/regression.py` + `tests/golden/` (6 cases: sizes 20×20 to 600×80, E 1-3, up to 5 turns, 1-2 layers, moved centres, tilt off, C_DIS off; 18 files). It also checks that Automate is idempotent. A deliberately corrupted golden line is caught. App code unchanged. Committed as 5d936fc.
   - Step 2 done: `krl_export.py` created. App6's `add_c_dis`, the regexes, the DEF-name check and the 60-line header f-string were removed; `save_krl_code` calls `krl_export.build_program(..., approximate=c_dis_var.get())`. Regression: ALL IDENTICAL (byte-identical `.src`). The app also starts normally when launched from another folder. App5 NOT switched yet (it still writes its own header with `TOOL_DATA[1] {Z 20}`, `BASE {Z 50}`); switching it changes its output, so that needs the owner's OK. JSON profiles / a settings dialog are deferred to Priority 3 (UI). Committed as cdf475a.
   - Step 3 done: `path_model.py`. Decision: the output text box stays the source for export (the user adds comments/approach moves and may edit by hand); the model is the single way lines are written and read.
@@ -186,5 +206,25 @@ Minor:
   - C3 `PythonApplication7.py` rewritten from scratch (the old file was a stub with invalid KRL). Headless and screenshot checks were done (top view + 3D view of 5 turns × 3 layers). The text box does not wrap and has a horizontal scrollbar.
   - C4: the selector's Cylindrical button launches App7; App7 has Back and Help.
   - C5: regression has 5 `CYL_*` cases (golden `.src`) and `check_cylinder`. The App6 goldens are unchanged. ALL IDENTICAL.
-  - Next: the owner tests the cylinder (dry run first). Then Priority 3 (UI: parametric panel, pre-export checks such as length/time/kinks, JSON project files, possibly merging App6 and App7 into one app with a shape choice).
+  - Next: the owner tests the cylinder (dry run first). Committed as 63ba375.
+- 2026-11-04: Priority 3 plan agreed:
+  - (1) Pre-export checks: SKIPPED for now (too many open lab variables; the owner will measure them first, then they come back as a precaution). Reach assumptions for later: robot base = world origin, wrist point = TCP + 205 mm up, reach 901 mm from A2 (25 mm forward, 400 mm up).
+  - (2) Export profiles + settings dialog: done, see below.
+  - (3) JSON project files.
+  - (4) A arrows in the 3D view.
+  - (5) One main app with a shape choice (last).
+  - (6) A PyInstaller exe later.
+  - Owner's decisions: time estimate skipped; rounding yes, as a profile option; only the NouvTete profile for now.
+  - Step 2a (no output change):
+    - `path_model.fmt(v, decimals)` and `to_krl(decimals)` / `program_to_krl(items, decimals)`.
+    - `krl_export` profiles (JSON at `PROFILES_PATH`, `settings_to_dict/from_dict` with validation: tool 1..16, base 1..32, decimals 0..6).
+    - `export_settings_dialog.py`, wired into both apps.
+    - Regression stayed identical. New `check_profiles`: JSON round trip, header identical from JSON, broken-file fallback for 4 bad files, rounding moves no number by more than 0.0005, and the dialog edit/Save/Save as New/invalid input/Delete/last-profile guard.
+  - Step 2b (intended output change):
+    - NOUVTETE `decimals=3`, plus the header line `; Export profile: <name>`.
+    - Verified against the previous goldens: only the 12 `.src` files changed, by exactly one added line each, and 439 motion lines changed only in their numbers (max 0.000495 mm). Points/preview files unchanged.
+    - Largest kink at a flat join after rounding: 0.02° (20×20 shape), typically < 0.007°.
+    - Full precision could also print `1e-07`-style numbers, which KRL may not accept; rounding avoids that.
+    - `export_profiles.json` created from the built-in.
+  - Next: step 3, JSON project files.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

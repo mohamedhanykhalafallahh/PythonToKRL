@@ -14,6 +14,7 @@ import contextlib
 import io
 import math
 import os
+import re
 import runpy
 import sys
 import tempfile
@@ -343,6 +344,93 @@ def check_shapes():
     return bad
 
 
+def check_profiles(tmpdir):
+    """Export profiles: JSON round trip, broken-file fallback, validation, rounding precision,
+    and the Export Settings dialog (edit + Save, Save as New, Delete) driven headlessly."""
+    import glob
+    import json
+    import krl_export as kx
+    import path_model as pm
+    bad = []
+    path = os.path.join(tmpdir, "profiles_test.json")
+    # round trip (incl. decimals and a second profile)
+    other = kx.settings_from_dict(dict(kx.settings_to_dict(kx.NOUVTETE), profile="Other",
+                                       tool=[1, 2, 3, 4, 5, 6], decimals=3, vel_cp=0.01))
+    kx.save_profiles("Other", {"NouvTete": kx.NOUVTETE, "Other": other}, path)
+    active, profiles, err = kx.load_profiles(path)
+    if err or active != "Other" or profiles.get("Other") != other or profiles.get("NouvTete") != kx.NOUVTETE:
+        bad.append("profile JSON round trip failed (%s)" % err)
+    # the built-in profile written to JSON and read back gives the identical header
+    kx.save_profiles("NouvTete", {"NouvTete": kx.NOUVTETE}, path)
+    if kx.build_header("X", kx.active_settings(path)[0]) != kx.build_header("X", kx.NOUVTETE):
+        bad.append("header from the saved NouvTete profile differs from the built-in one")
+    # broken / invalid files fall back to the built-in profile with a message
+    for content in ("{not json", json.dumps({"profiles": {"P": {"tool_no": 99}}}),
+                    json.dumps({"profiles": {"P": {"colour": "red"}}}), json.dumps({"profiles": {}})):
+        with open(path, "w") as f:
+            f.write(content)
+        s, err = kx.active_settings(path)
+        if not err or s != kx.NOUVTETE:
+            bad.append("bad profile file not reported / no fallback: %r" % content[:30])
+    if kx.active_settings(os.path.join(tmpdir, "missing.json")) != (kx.NOUVTETE, None):
+        bad.append("missing profile file is not the silent built-in default")
+    # rounding: same lines, every number within half a unit of the 3rd decimal
+    rounded = dict(kx.settings_to_dict(kx.NOUVTETE), decimals=3)
+    s3 = kx.settings_from_dict(rounded)
+    num = re.compile(r"[-+]?\d+\.?\d*(?:[eE][-+]?\d+)?")
+    for f in sorted(glob.glob(os.path.join(GOLDEN, "*.src"))):
+        text = open(f).read()
+        body = text[text.index("$ACC_AXIS[6]=100\n") + len("$ACC_AXIS[6]=100\n"):-len("END")]
+        a = kx.build_program("X", body, kx.NOUVTETE, approximate=False)
+        b = kx.build_program("X", body, s3, approximate=False)
+        la, lb = a.split("\n"), b.split("\n")
+        if len(la) != len(lb) or [num.sub("#", x) for x in la] != [num.sub("#", y) for y in lb]:
+            bad.append("%s: rounding changed more than numbers" % os.path.basename(f))
+            continue
+        worst = max([abs(float(x) - float(y)) for p, q in zip(la, lb) for x, y in zip(num.findall(p), num.findall(q))] or [0])
+        if worst > 0.0005 + 1e-12:
+            bad.append("%s: rounding moved a value by %g" % (os.path.basename(f), worst))
+    # dialog: edit the TCP + decimals, Save; Save as New; Delete
+    import export_settings_dialog as esd
+    from tkinter import simpledialog
+    msgs = []
+    messagebox.showinfo = lambda *a, **k: msgs.append(("info", a[1] if len(a) > 1 else ""))
+    messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
+    messagebox.showwarning = lambda *a, **k: msgs.append(("warning", a[1] if len(a) > 1 else ""))
+    messagebox.askyesno = lambda *a, **k: True
+    simpledialog.askstring = lambda *a, **k: "  Test   Head "
+    os.remove(path)
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        d = esd.open_dialog(root, path=path)
+        d.vars["tool_X"].set("12.5")
+        d.vars["decimals"].set("3")
+        d.save()
+        active, profiles, err = kx.load_profiles(path)
+        if err or profiles["NouvTete"].tool[0] != 12.5 or profiles["NouvTete"].decimals != 3:
+            bad.append("dialog Save did not store the edited profile")
+        d.save_as_new()
+        active, profiles, err = kx.load_profiles(path)
+        if active != "Test Head" or set(profiles) != {"NouvTete", "Test Head"}:
+            bad.append("dialog Save as New failed: %s / %s" % (active, sorted(profiles)))
+        d.vars["cdis"].set("abc")
+        d.save()
+        if not msgs or msgs[-1][0] != "error":
+            bad.append("dialog accepted a non-number")
+        d._load("Test Head")
+        d.delete()
+        active, profiles, err = kx.load_profiles(path)
+        if set(profiles) != {"NouvTete"} or active != "NouvTete":
+            bad.append("dialog Delete failed: %s" % sorted(profiles))
+        d.delete()          # the last profile must stay
+        if set(kx.load_profiles(path)[1]) != {"NouvTete"}:
+            bad.append("the last profile was deleted")
+    finally:
+        root.destroy()
+    return bad
+
+
 def check_invalid_name_not_saved(tmpdir):
     """Exporting to an invalid KRL name must show an error and write nothing."""
     errors = []
@@ -382,7 +470,10 @@ def main():
     os.makedirs(GOLDEN, exist_ok=True)
     failed = 0
     with tempfile.TemporaryDirectory() as tmpdir:
-        runs = [(n, c, run_case) for n, c in CASES.items()] + [(n, c, run_cyl_case) for n, c in CYL_CASES.items()]
+        # Never use the user's export_profiles.json: the apps export with the built-in profile
+        import krl_export
+        krl_export.PROFILES_PATH = os.path.join(tmpdir, "no_profiles_here.json")
+        runs =[(n, c, run_case) for n, c in CASES.items()] + [(n, c, run_cyl_case) for n, c in CYL_CASES.items()]
         for name, case, runner in runs:
             try:
                 out = runner(case, tmpdir, name)
@@ -415,6 +506,7 @@ def main():
                              ("path_model round trip / 3D path", check_path_model),
                              ("shapes offset (CCW + CW, exact sides and radii)", check_shapes),
                              ("cylinder geometry (tangent, radii, counts, A, Z)", check_cylinder),
+                             ("export profiles + settings dialog", lambda: check_profiles(tmpdir)),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:

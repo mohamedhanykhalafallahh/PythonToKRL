@@ -1,0 +1,37 @@
+{
+  "active": "NouvTete",
+  "profiles": {
+    "NouvTete": {
+      "base_no": 1,
+      "base": [
+        0.0,
+        0.0,
+        200.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "base_comment": "Define base with Tool 3 - Optimized for comfortable robot positioning",
+      "tool_no": 3,
+      "tool": [
+        10.0,
+        0.0,
+        205.0,
+        180.0,
+        0.0,
+        0.0
+      ],
+      "tool_comments": [
+        "Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)",
+        "Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0"
+      ],
+      "cdis": 5.0,
+      "cptp": 50,
+      "vel_ptp": 100,
+      "vel_cp": 2,
+      "acc_cp": 100,
+      "acc_axis": 100,
+      "decimals": 3
+    }
+  }
+}

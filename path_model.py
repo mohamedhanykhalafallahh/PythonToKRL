@@ -9,8 +9,9 @@ A program body is a list of items, one per line:
     parse_krl(text)                       KRL text -> model
     path_3d(items)                        model -> 3D polyline per move (for views and checks)
 
-Number format: every value is written with fmt() (str of the float, full precision).
-Rounding of the output is a deliberate change made here, nowhere else.
+Number format: every value is written with fmt(): full precision by default, or rounded to
+n decimals when a `decimals` argument is passed down (to_krl / program_to_krl). The export
+applies the active profile's decimals (krl_export).
 """
 import math
 import re
@@ -19,9 +20,20 @@ from typing import Optional
 
 # ------------------------------------------------------------------ formatting
 
-def fmt(v):
-    """Coordinates and angles: full precision, always written as a float ('180.0')."""
-    return str(float(v))
+def fmt(v, decimals=None):
+    """Coordinates and angles, always written as a float ('180.0').
+    decimals=None: full precision (str of the float).
+    decimals=n:    rounded to n decimals, trailing zeros removed ('45.355', '535.0', never '-0.0')."""
+    if decimals is None:
+        return str(float(v))
+    s = "{:.{}f}".format(float(v), int(decimals))
+    if "." in s:
+        s = s.rstrip("0")
+        if s.endswith("."):
+            s += "0"
+    else:
+        s += ".0"
+    return "0.0" if s == "-0.0" else s
 
 
 def fmt_st(v):
@@ -48,12 +60,12 @@ class Pose:
     def xyz(self):
         return (self.x, self.y, self.z)
 
-    def to_krl(self):
+    def to_krl(self, decimals=None):
         parts = []
         for key in _POSE_KEYS:
             v = getattr(self, key.lower())
             if v is not None:
-                parts.append("{} {}".format(key, fmt_st(v) if key in "ST" else fmt(v)))
+                parts.append("{} {}".format(key, fmt_st(v) if key in "ST" else fmt(v, decimals)))
         return "{" + ", ".join(parts) + "}"
 
 
@@ -76,8 +88,8 @@ class Ptp:
     approx: Optional[str] = None      # e.g. "C_PTP"
     note: Optional[str] = None        # trailing ';' comment (text after the ';')
 
-    def to_krl(self):
-        return "PTP " + self.target.to_krl() + _tail(self.approx, self.note)
+    def to_krl(self, decimals=None):
+        return "PTP " + self.target.to_krl(decimals) + _tail(self.approx, self.note)
 
 
 @dataclass
@@ -86,8 +98,8 @@ class Lin:
     approx: Optional[str] = None      # e.g. "C_DIS"
     note: Optional[str] = None
 
-    def to_krl(self):
-        return "LIN " + self.target.to_krl() + _tail(self.approx, self.note)
+    def to_krl(self, decimals=None):
+        return "LIN " + self.target.to_krl(decimals) + _tail(self.approx, self.note)
 
 
 @dataclass
@@ -97,15 +109,15 @@ class Circ:
     approx: Optional[str] = None
     note: Optional[str] = None
 
-    def to_krl(self):
-        return "CIRC " + self.via.to_krl() + "," + self.target.to_krl() + _tail(self.approx, self.note)
+    def to_krl(self, decimals=None):
+        return "CIRC " + self.via.to_krl(decimals) + "," + self.target.to_krl(decimals) + _tail(self.approx, self.note)
 
 
 @dataclass
 class Comment:
     text: str                         # written as '; ' + text
 
-    def to_krl(self):
+    def to_krl(self, decimals=None):
         return "; " + self.text
 
 
@@ -113,20 +125,20 @@ class Comment:
 class Raw:
     text: str                         # written exactly as it is
 
-    def to_krl(self):
+    def to_krl(self, decimals=None):
         return self.text
 
 
 MOTIONS = (Ptp, Lin, Circ)
 
 
-def to_krl(item):
-    return item.to_krl()
+def to_krl(item, decimals=None):
+    return item.to_krl(decimals)
 
 
-def program_to_krl(items):
+def program_to_krl(items, decimals=None):
     """Items -> text, one line per item, joined with '\\n' (no trailing newline added)."""
-    return "\n".join(i.to_krl() for i in items)
+    return "\n".join(i.to_krl(decimals) for i in items)
 
 
 # ------------------------------------------------------------------ parsing
