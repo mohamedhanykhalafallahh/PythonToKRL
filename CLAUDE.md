@@ -28,6 +28,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 |---|---|
 | `PythonApplication6.py` | **Main program**, "Cuboidal KRL Code Generator". |
 | `PythonApplication7.py` | **Cylinder app** ("Cylinder KRL Code Generator", class `CylinderApp`). Inputs → `cylinder.generate` → text box, top view, 3D view, export via `krl_export` (`export_to(path)` without a dialog, for tests). |
+| `cuboid.py` | Cuboid path generator (no tkinter): `generate_from_loop` (any base loop, exact counts; App6's Automate passes N+1) and the parametric `CuboidParams` / `validate` / `generate` (exact N, B used everywhere, no tilt clamp) for the main app. |
 | `cylinder.py` | Cylinder path generator (no tkinter): `CylinderParams`, `validate`, `generate` → (path_model items, info), `_lane_change` (tangent biarc between rings). |
 | `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by App6 and App7. |
 | `PythonApplication1–5.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"). |
@@ -58,11 +59,12 @@ Ways to build it:
 - Import/Save `.txt`: lines `X Y Z A B C` (origin), `X Y Z A B C LIN`, `x1 y1 z1 x2 y2 z2 A B C CIRC`.
 - "Change Center" offsets every point by (Xc, Yc, Zc).
 
-### Stage 2: Automate (`automate_alternating_spiral`)
+### Stage 2: Automate (`automate()` → `cuboid.generate_from_loop`)
+Since step 5a the path is generated in `cuboid.py`, which has no tkinter and is shared with the main app. App6's `automate()` only validates the inputs, clamps the tilt to 5–20°, passes `turns + 1` / `layers + 1` (App6 keeps its N+1 counting), writes `program_to_krl(items)` into the box, sets `current_a_angle` to the returned final A, and draws with `draw_output_path()`.
 - Turn t: `shapes.offset_loop(base, E*t)` moves every point by `E*t` along its outward normal. Edges shift by E*t; each fillet keeps its centre and its radius grows by E*t, so it stays tangent. The normals come from the geometry (edge perpendicular, arc radial, CW/CCW from the signed area, snapped to exact 0/±1/±√½), so any base order or direction works. `e` is positive (no more negation).
 - Layer l: Z += `W*l`.
 - Even layers spiral outward (T0 → Tn); odd layers spiral inward (Tn → T0), following `Sequence.txt`.
-- Turn and layer changes use `create_circ_transition`: a CIRC whose via point is offset perpendicular to the jump by 20% of its length (drawn purple on the canvas).
+- Turn and layer changes use `cuboid._transition`: the exact tangent fillet (`cuboid._fillet_transition`: LIN + CIRC or CIRC + LIN), falling back to the old single CIRC with a 20% via offset if the geometry does not allow a fillet. Drawn purple.
 
 ### Orientation (Auto-Orient Along Travel, default on)
 - A = `atan2(dy, dx)` of the next edge, updated only at CIRC ends. LIN keeps the current A ("pen-like").
@@ -247,5 +249,18 @@ Minor:
     - Results: all auto-orient goldens (App6 and App7) are within 0.33° at move ends and mid-arcs; orientation-off cases are red. The old NouvTete15 corner (via 0.536 r) is flagged at 36.8° at the arc end, matching the 37° analysis; the fixed corner shows 0°.
     - Regression `check_heading`: goldens, the old-corner case, and the view drawing one arrow per check. Do not call `update()` on a new Tk root in the test: it runs stale events of earlier test windows and prints "ThemeChanged" Tk noise.
     - Screenshots checked (top view: all green for REG_300x150; red where A stays 180 while travelling +Y in REG_tilt_off).
-  - Next: step 5, one main app with a shape choice (biggest step; plan it with the owner first). Pre-export checks (step 1) are still deferred; `tangent_kinks` and `heading_checks` are ready for them.
+  - Committed as 309ece3. Pre-export checks (step 1) are still deferred; `tangent_kinks` and `heading_checks` are ready for them.
+- 2026-11-04: Step 5 plan agreed with the owner (one all-in-one app):
+  - The new main app is the entry point. App6 stays reachable from it as the advanced "manual 11-point editor". App7 and the selector retire (git keeps them).
+  - Exact N turns/layers in the new app; App6 keeps N+1.
+  - No tilt clamp: the B / Tilt value is used as typed.
+  - Field names "Turn/Ring step E (mm)" and "Layer height (mm)".
+  - Layout like App7: inputs left, top view right, output bottom, shape selector at the top. No function may be lost.
+  - Sub-steps: 5a cuboid generator out of App6; 5b main window; 5c open old project files; 5d entry point; 5e tests/screenshots/CLAUDE.md.
+  - Step 5a done: `cuboid.py`.
+    - The App6 Automate code (`automate_alternating_spiral`, `generate_turn_path`, `_fillet_transition`, `create_circ_transition`, `get_last_(two_)point(s)_of_turn`, `calculate_transition_a_angle`; 397 lines) was moved out. The global `current_a_angle` became `_Writer.a`, and the Auto-Orient checkbox became a parameter.
+    - App6 `automate()` calls `cuboid.generate_from_loop(..., turns + 1, layers + 1, ..., tilt (clamped 5–20), auto_orient)` and draws with `draw_output_path()`.
+    - Verified before switching: App6's old Automate vs the new generator on 60 random cases (15 clockwise bases, 11 orientation-off, tilt outside 5–20, r = L/2, up to 6 turns × 4 layers): all byte-identical, including the final A. After switching: regression ALL IDENTICAL.
+    - New `check_cuboid_params`: the parametric `cuboid.generate` (exact N) reproduces every auto-orient App6 golden `.src` byte for byte. Orientation-off differs only in B on the transition moves: App6 wrote the tilt there, the new API uses B everywhere (intended cleanup).
+  - Next: 5b, the main window.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

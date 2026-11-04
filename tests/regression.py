@@ -431,6 +431,38 @@ def check_profiles(tmpdir):
     return bad
 
 
+def check_cuboid_params():
+    """cuboid.generate (parametric, exact N, used by the main app) reproduces every auto-orient
+    App6 golden .src from the parameters alone (App6's N+1 -> N, its tilt clamp applied).
+    With auto-orient off the new API uses B everywhere (App6 wrote the tilt on transitions)."""
+    import cuboid
+    import krl_export as kx
+    import path_model as pm
+    bad = []
+    for name, case in CASES.items():
+        Xr, Yr, Zr, L, W, Th = case["base"][:6]
+        r = case["base"][6] if len(case["base"]) > 6 else None
+        E, H, turns, layers = case["auto"]
+        tilt = max(5.0, min(float(case["tilt"]), 20.0))
+        p = cuboid.CuboidParams(xc=Xr, yc=Yr, z0=float(Zr) + float(Th), length=L, width=W,
+                                corner_radius=None if r is None else float(r), step=float(E), layer_height=float(H),
+                                turns=turns + 1, layers=layers + 1, a=180.0, b=tilt if case["orient"] else 0.0,
+                                c=180.0, auto_orient=case["orient"])
+        items, info = cuboid.generate(p)
+        body = pm.program_to_krl(items) + "\n" + "\n"      # as App6 exports the text box
+        src = kx.build_program(name, body, kx.NOUVTETE, approximate=case["cdis"])
+        golden = open(os.path.join(GOLDEN, name + ".src")).read()
+        if case["orient"]:
+            if src != golden:
+                bad.append("%s: parametric output differs from the App6 golden (%s)" % (name, first_diff(golden, src)))
+        else:
+            # same moves, but B = 0 also on the transition moves
+            fix = lambda t: t.replace("B 20.0", "B 0.0")
+            if fix(src) != fix(golden) or "B 20.0" in src:
+                bad.append("%s: orientation-off output not as expected" % name)
+    return bad
+
+
 def check_heading():
     """path_model.heading_checks: auto-orient outputs keep A within 1 deg of the travel direction
     (mid and end of every move); orientation-off outputs are flagged; the chamfer-like corner of
@@ -713,6 +745,7 @@ def main():
                              ("export profiles + settings dialog", lambda: check_profiles(tmpdir)),
                              ("project files (both apps)", lambda: check_projects(tmpdir)),
                              ("head direction A vs travel + 3D arrows", check_heading),
+                             ("cuboid.py parametric API reproduces the App6 goldens", check_cuboid_params),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:
