@@ -10,7 +10,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 - **Robot:** KUKA KR 6 R900 sixx (art. 10015565, s/n 502323, 07/2014), 6 kg payload, 901 mm reach, floor mounted. `$TRAFONAME` = `KR6R900 C4SR FLR`, MADA `KRC4_SR\KR_6_R900_sixx\FLOOR`, so the controller is a KR C4 smallsize. KSS version and installed options (EKI/RSI) are not known yet.
 - **Process:** continuous glass-fiber roving (about 3 mm wide), impregnated with resin and cured by UV. The fiber is never cut, so the whole print is one continuous path, which is why every turn and layer is joined by a transition move.
 - **Head ("NouvTete", the new head):** a PETG 3D-printed head. Fiber spool on top, resin funnel, orange resin tube, a spring-loaded roller pressing the fiber onto the bed, and the UV lamp tilted and trailing behind the roller. A follows the travel direction so the lamp always trails. The tilt (B) depends on the roller/nozzle geometry. A more compact head is in progress.
-- **TCP:** measured by the 4-point method on a small metal cylinder, accuracy unsure. The current program writes `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}`. The older MHK value `{X -5.711, Y 128.569, Z 204.993}` was for the old head.
+- **TCP:** measured by the 4-point method on a small metal cylinder, accuracy unsure. `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}` was only in the variants `Copie (2)` / `large curve`. The main file kept the old MHK head value `{X -5.711, Y 128.569, Z 204.993}` until 2026-11-04, when it was switched to the NouvTete value. That value is an ASSUMPTION: it is not yet confirmed against `NouvTete15.src` or the controller's tool data. The owner will verify it.
 - **Base:** `BASE_DATA[1] = {Z 200}` is an estimate; the bed is not calibrated. The owner overrides TOOL/BASE in the `.src` because the controller-side settings caused errors (which error is still unknown).
 - **Fiber tension:** currently applied by hand or tape; to be automated later. UV and resin are switched manually for now.
 - **Intended values:** layer height about 1 mm, speed about 10 mm/s. Note that `BAS(#VEL_CP, 2)` means 2 **m/s**; the real speed so far came from the smartPAD override.
@@ -69,7 +69,8 @@ Standard KUKA header (INI folds, PTP HOME). It then sets `BASE_DATA[1] = {Z 200}
 ## Known issues / refinement backlog (found 2026-11-03; [x] = fixed in PythonApplication6.py only)
 KRL / robot level:
 - [x] No `C_DIS` on LIN/CIRC lines, so the robot stops exactly at every point (blobs when extruding), even though `$APO.CDIS` is set.
-- [ ] The main file's export header still writes the OLD head TCP `TOOL_DATA[3] = {X -5.711, Y 128.569, Z 204.993}`. The NouvTete TCP `{X 10, Y 0, Z 205, A 180}` is only in `Copie (2)`. Fix next.
+- [x] The main file's export header wrote the OLD head TCP. Now it writes `{X 10, Y 0, Z 205, A 180}` (NouvTete, assumed). The old value is kept as a comment in the `.src`.
+- [ ] Verify the NouvTete TCP (owner): compare with the `TOOL_DATA[3]` line in `NouvTete15.src` and with the controller's tool data.
 - [ ] Export overwrites `TOOL_DATA[3]` / `BASE_DATA[1]` on the controller permanently; variants write different TCPs into the same slot.
 - [ ] Verify `BAS(#VEL_CP, 2)`: the unit is m/s, so 2 m/s is very fast for printing.
 - [x] `DEF` name from the file name must be a valid KRL identifier (no spaces or dashes, length limit).

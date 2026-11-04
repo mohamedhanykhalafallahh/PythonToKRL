@@ -1139,8 +1139,9 @@ PTP  XHOME
 ; Define base with Tool 3 - Optimized for comfortable robot positioning
 BASE_DATA[1] = {{X 0.0, Y 0.0, Z 200.0, A 0.0, B 0.0, C 0.0}}
 $BASE = BASE_DATA[1]
-; Define Tool 3 with calibrated TCP values (MHK-TOOL)
-TOOL_DATA[3] = {{X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0}}
+; Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)
+; Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0
+TOOL_DATA[3] = {{X 10.0, Y 0.0, Z 205.0, A 180.0, B 0.0, C 0.0}}
 $TOOL = TOOL_DATA[3]
 ; Set frame data for proper tool usage
 FDAT_ACT = {{TOOL_NO 3, BASE_NO 1, IPO_FRAME #BASE}}
