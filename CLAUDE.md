@@ -240,5 +240,12 @@ Minor:
     - Cause: `_restore_state` always called `visualize_cuboid()` (base only); the automated turns are drawn only while Automate runs. The same happened for Automate → Clear All → Undo.
     - Fix: `draw_output_path()` draws the path from the OUTPUT TEXT the way Automate does (blue moves with labels and red dots, purple transitions with a purple via dot). `redraw_canvas_from_state()` uses it when the output has `===== LAYER` comments, otherwise `visualize_cuboid()`. Used by `_restore_state` (undo/redo) and by Open Project (also when the saved output is kept).
     - Verified with a geometric comparison of the canvas (each shape's start/mid/end in mm, so the 30 vs 31 arc sample points caused by float noise don't matter): Redo and Clear+Undo are identical to the live Automate drawing in 4 cases. The regression now checks Open, Undo (empty canvas), Redo, and Clear All + Undo against the live drawing (`_canvas_moves`/`_same_drawing`, 0.05 mm tolerance); with the old behaviour put back temporarily it fails as expected. Screenshot confirmed.
-  - Next: step 4, A arrows in the 3D view.
+  - Committed as 0a73d26.
+  - Step 4 done: head-direction arrows in the 3D view.
+    - `path_model.heading_checks(items)` returns, for every LIN/CIRC, A at the MIDDLE (interpolated the short way from the previous A) and at the END, compared with the exact travel direction there (analytic arc tangent via `_arc_frame`): `dev` = |A − heading|. Also `angle_diff`.
+    - `view3d`: checkbox "Head direction (A)" (off by default). It draws 16 px arrows (cos A, sin A in XY), tagged `head_arrow`: green ≤ 5°, orange ≤ 20°, red > 20°. The info line shows the largest deviation and the number of red arrows.
+    - Results: all auto-orient goldens (App6 and App7) are within 0.33° at move ends and mid-arcs; orientation-off cases are red. The old NouvTete15 corner (via 0.536 r) is flagged at 36.8° at the arc end, matching the 37° analysis; the fixed corner shows 0°.
+    - Regression `check_heading`: goldens, the old-corner case, and the view drawing one arrow per check. Do not call `update()` on a new Tk root in the test: it runs stale events of earlier test windows and prints "ThemeChanged" Tk noise.
+    - Screenshots checked (top view: all green for REG_300x150; red where A stays 180 while travelling +Y in REG_tilt_off).
+  - Next: step 5, one main app with a shape choice (biggest step; plan it with the owner first). Pre-export checks (step 1) are still deferred; `tangent_kinks` and `heading_checks` are ready for them.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

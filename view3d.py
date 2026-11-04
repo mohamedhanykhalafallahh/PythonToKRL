@@ -15,6 +15,8 @@ import path_model as pm
 LAYER_COLORS_3D = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#8c564b",
                    "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#393b79"]
 TRANSITION_COLOR_3D = "purple"
+ARROW_OK, ARROW_WARN, ARROW_BAD = "#2ca02c", "#ff7f0e", "#d62728"   # A vs travel: <= 5, <= 20, > 20 deg
+ARROW_PX = 16                                                       # arrow length on screen
 
 # KRL text -> 3D moves: path_model.parse_krl + path_model.path_3d (shared with other tools)
 
@@ -50,6 +52,9 @@ class View3D:
         self.by_layer_var = tk.BooleanVar(value=True)
         tk.Checkbutton(bar, text="Colour by layer", variable=self.by_layer_var,
                        command=self.redraw).pack(side=tk.LEFT, padx=(0, 10))
+        self.arrows_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(bar, text="Head direction (A)", variable=self.arrows_var,
+                       command=self.redraw).pack(side=tk.LEFT, padx=(0, 10))
         for txt, yaw, pitch in (("Iso", self.DEFAULT_YAW, self.DEFAULT_PITCH), ("Top", 0.0, math.radians(90)),
                                 ("Front", 0.0, 0.0), ("Side", math.radians(-90), 0.0)):
             tk.Button(bar, text=txt, width=5,
@@ -76,7 +81,9 @@ class View3D:
 
     # ---------- data ----------
     def reload(self):
-        self.start, self.moves = pm.path_3d(pm.parse_krl(self.get_text()))
+        items = pm.parse_krl(self.get_text())
+        self.start, self.moves = pm.path_3d(items)
+        self.headings = pm.heading_checks(items)
         pts = [p for m in self.moves for p in m['pts']] + ([self.start] if self.start else [])
         self.pts_all = pts
         if not pts:
@@ -165,12 +172,42 @@ class View3D:
                 x, y = scr(p)
                 c.create_oval(x - 4, y - 4, x + 4, y + 4, fill=col, outline="")
 
+        # Head direction A (arrows at the middle and the end of every move)
+        arrow_line = ""
+        if self.arrows_var.get():
+            arrow_line = self._draw_arrows(scr) + "\n"
+
         n_layers = len(set(m['layer'] for m in self.moves)) if self.moves else 0
         n_tr = sum(1 for m in self.moves if m['transition'])
         self.info.config(text=(
             f"{len(self.moves)} moves ({n_tr} in transitions), {n_layers} layer(s), Z {b[4]:.1f} to {b[5]:.1f} mm   |   "
-            f"axes: X/Y {L:g} mm, Z {L / zex:g} mm (Z shown x{zex})   |   green = start, red = end\n"
+            f"axes: X/Y {L:g} mm, Z {L / zex:g} mm (Z shown x{zex})   |   green = start, red = end\n" + arrow_line +
             f"Left-drag: rotate   |   Right-drag: move   |   Wheel: zoom   |   Double-click: reset view"))
+
+    def _draw_arrows(self, scr):
+        """Arrows showing the head direction A (cos A, sin A in XY) at the middle and the end of
+        each move, coloured by the angle between A and the travel direction. Returns a summary."""
+        c = self.canvas
+        n_red = 0
+        for h in self.headings:
+            p = h['point']
+            a = math.radians(h['a'])
+            x0, y0 = scr(p)
+            x1, y1 = scr((p[0] + math.cos(a), p[1] + math.sin(a), p[2]))
+            dx, dy = x1 - x0, y1 - y0
+            n = math.hypot(dx, dy)
+            if n < 1e-9:
+                continue                       # A points straight at the viewer (e.g. Front view)
+            col = ARROW_OK if h['dev'] <= 5 else (ARROW_WARN if h['dev'] <= 20 else ARROW_BAD)
+            n_red += h['dev'] > 20
+            c.create_line(x0, y0, x0 + dx / n * ARROW_PX, y0 + dy / n * ARROW_PX, fill=col, width=2,
+                          arrow=tk.LAST, arrowshape=(6, 7, 3), tags=("head_arrow",))
+        if not self.headings:
+            return "Head direction: no A values in the path."
+        worst = max(self.headings, key=lambda h: h['dev'])
+        return ("Head direction A (arrows; green <= 5 deg, orange <= 20, red > 20 off the travel direction): "
+                "largest %.1f deg (%s of move %d), %d red of %d"
+                % (worst['dev'], worst['where'], worst['move'] + 1, n_red, len(self.headings)))
 
     # ---------- mouse ----------
     def _press(self, e):

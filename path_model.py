@@ -349,6 +349,77 @@ def tangent_kinks(items):
     return out
 
 
+def angle_diff(a, b):
+    """Signed shortest rotation from angle a to angle b (deg), in [-180, 180)."""
+    return (b - a + 180.0) % 360.0 - 180.0
+
+
+def _arc_frame(p1, pv, p2):
+    """Circle through p1 -> pv -> p2: (centre, R, e1, e2, sweep) with p(t) = c + R(e1 cos t + e2 sin t),
+    t from 0 (p1) to sweep (p2), passing pv. None if the points are collinear."""
+    a, b = _v_sub(p1, p2), _v_sub(pv, p2)
+    axb = _v_cross(a, b)
+    n2 = _v_dot(axb, axb)
+    if n2 < 1e-12:
+        return None
+    c = _v_add(p2, _v_mul(_v_cross(_v_sub(_v_mul(b, _v_dot(a, a)), _v_mul(a, _v_dot(b, b))), axb), 1.0 / (2 * n2)))
+    r_vec = _v_sub(p1, c)
+    R = math.sqrt(_v_dot(r_vec, r_vec))
+    e1 = _v_mul(r_vec, 1.0 / R)
+    e2 = _v_cross(_v_mul(axb, 1.0 / math.sqrt(n2)), e1)
+    two_pi = 2 * math.pi
+    ang = lambda q: math.atan2(_v_dot(_v_sub(q, c), e2), _v_dot(_v_sub(q, c), e1)) % two_pi
+    av, a2 = ang(pv), ang(p2)
+    sweep = a2 if av <= a2 else -(two_pi - a2)
+    return c, R, e1, e2, sweep
+
+
+def heading_checks(items):
+    """Head direction A against the travel direction, for every LIN / CIRC (after a PTP):
+    at the END of the move (the A written in the line) and at its MIDDLE (A interpolated the
+    short way from the previous A, approximately what the controller does).
+
+    Returns a list of dicts {'move': k, 'where': 'mid'/'end', 'point': (x, y, z), 'a': A,
+    'heading': travel direction in XY (deg), 'dev': |A - heading| (deg)}. Moves without A,
+    or (almost) vertical at that point, are skipped. A = heading means the head points along
+    the travel (how the apps set it)."""
+    out, pos, cur_a, k = [], None, None, 0
+    for item in items:
+        if isinstance(item, Ptp):
+            pos, cur_a = item.target.xyz, item.target.a
+            continue
+        if not isinstance(item, (Lin, Circ)) or pos is None:
+            continue
+        end, a_end = item.target.xyz, item.target.a
+        if isinstance(item, Lin):
+            d = _v_sub(end, pos)
+            mid, t_mid, t_end = _v_mul(_v_add(pos, end), 0.5), d, d
+        else:
+            fr = _arc_frame(pos, item.via.xyz, end)
+            if fr is None:
+                d = _v_sub(end, pos)
+                mid, t_mid, t_end = _v_mul(_v_add(pos, end), 0.5), d, d
+            else:
+                c, R, e1, e2, sweep = fr
+                sg = 1.0 if sweep >= 0 else -1.0
+                tm = sweep / 2
+                mid = _v_add(c, _v_add(_v_mul(e1, R * math.cos(tm)), _v_mul(e2, R * math.sin(tm))))
+                tang = lambda t: _v_mul(_v_add(_v_mul(e1, -math.sin(t)), _v_mul(e2, math.cos(t))), sg)
+                t_mid, t_end = tang(tm), tang(sweep)
+        if a_end is not None:
+            a_mid = a_end if cur_a is None else cur_a + angle_diff(cur_a, a_end) / 2.0
+            for where, p, t, a in (("mid", mid, t_mid, a_mid), ("end", end, t_end, a_end)):
+                if math.hypot(t[0], t[1]) < 1e-9 * max(1.0, math.sqrt(_v_dot(t, t))):
+                    continue
+                heading = math.degrees(math.atan2(t[1], t[0]))
+                out.append({'move': k, 'where': where, 'point': p, 'a': a, 'heading': heading,
+                            'dev': abs(angle_diff(heading, a))})
+            cur_a = a_end
+        pos = end
+        k += 1
+    return out
+
+
 def path_length(moves):
     """Total length (mm) of the moves from path_3d (arcs measured along their polyline)."""
     total = 0.0

@@ -431,6 +431,42 @@ def check_profiles(tmpdir):
     return bad
 
 
+def check_heading():
+    """path_model.heading_checks: auto-orient outputs keep A within 1 deg of the travel direction
+    (mid and end of every move); orientation-off outputs are flagged; the chamfer-like corner of
+    the old NouvTete15 print (via at 0.536 r) is flagged at about 37 deg; the 3D view draws the arrows."""
+    import glob
+    import path_model as pm
+    bad = []
+    for f in sorted(glob.glob(os.path.join(GOLDEN, "*.src"))):
+        name = os.path.basename(f)
+        hc = pm.heading_checks(pm.parse_krl(open(f).read()))
+        worst = max(h['dev'] for h in hc)
+        off = "tilt_off" in name or "orient_off" in name
+        if (off and worst <= 20) or (not off and worst > 1.0):
+            bad.append("%s: largest A deviation %.2f deg" % (name, worst))
+    r, k = 22.5, 2 ** -0.9
+    items = [pm.Ptp(pm.pose((300, 100, 0), (180, 0, 180))), pm.Lin(pm.pose((100 + r, 100, 0), (180, 0, 180))),
+             pm.Circ(pm.pose((100 + r - r * k, 100 - r + r * k, 0)), pm.pose((100, 100 - r, 0), (-90, 0, 180)))]
+    dev = [h['dev'] for h in pm.heading_checks(items) if h['move'] == 1 and h['where'] == 'end']
+    if not dev or abs(dev[0] - 36.8) > 0.5:
+        bad.append("old chamfer-like corner not flagged correctly (%s)" % dev)
+    # the 3D view draws one arrow per check, in the right colours
+    import view3d
+    text = open(os.path.join(GOLDEN, "REG_tilt_off.src")).read()
+    root = tk.Tk(); root.withdraw()
+    try:
+        v = view3d.View3D(root, lambda: text)
+        v.arrows_var.set(True)
+        v.redraw()      # no update(): it would also run stale events of the earlier test windows
+        arrows = v.canvas.find_withtag("head_arrow")
+        if len(arrows) != len(v.headings) or "77 red" not in v.info.cget("text"):
+            bad.append("3D view: %d arrows for %d checks" % (len(arrows), len(v.headings)))
+    finally:
+        root.destroy()
+    return bad
+
+
 def _new_app6():
     tk.Tk.mainloop = lambda self, n=0: None
     with contextlib.redirect_stdout(io.StringIO()):
@@ -676,6 +712,7 @@ def main():
                              ("cylinder geometry (tangent, radii, counts, A, Z)", check_cylinder),
                              ("export profiles + settings dialog", lambda: check_profiles(tmpdir)),
                              ("project files (both apps)", lambda: check_projects(tmpdir)),
+                             ("head direction A vs travel + 3D arrows", check_heading),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:
