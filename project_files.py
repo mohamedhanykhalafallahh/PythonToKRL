@@ -19,7 +19,7 @@ import krl_export
 
 FORMAT = 1
 FILETYPES = [("Project files", "*.json"), ("All files", "*.*")]
-APP_NAMES = {"cuboid": "Cuboid (PythonApplication6)", "cylinder": "Cylinder (PythonApplication7)",
+APP_NAMES = {"cuboid": "Cuboid (PythonApplication6)", "cylinder": "Cylinder (PythonApplication7, retired)",
              "main": "KRL Generator (main app)"}
 
 
@@ -49,7 +49,8 @@ def load_project(path, app):
     if not isinstance(data, dict) or "app" not in data or "format" not in data:
         raise ProjectError("This is not a PythonToKRL project file.")
     if data["app"] != app:
-        raise ProjectError("This project was made with the %s app.\nOpen it there instead."
+        raise ProjectError("This project was made with the %s app.\nOpen it in the KRL Generator "
+                           "(KRL_Generator.py), which opens every project type."
                            % APP_NAMES.get(data["app"], repr(data["app"])))
     if not isinstance(data["format"], int) or data["format"] > FORMAT:
         raise ProjectError("This project file was written by a newer version of the program "

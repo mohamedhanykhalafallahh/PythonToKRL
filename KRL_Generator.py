@@ -216,6 +216,7 @@ class MainApp:
                       command=lambda: export_settings_dialog.open_dialog(self.root))
         t.add_separator()
         t.add_command(label="Manual 11-point editor (advanced)...", command=self.open_manual_editor)
+        t.add_command(label="Free-form editor (experimental)...", command=self.open_free_form_editor)
         m.add_cascade(label="Tools", menu=t)
         h = tk.Menu(m, tearoff=False)
         h.add_command(label="How to use", command=lambda: messagebox.showinfo("How to use", HELP_GENERAL))
@@ -583,13 +584,22 @@ class MainApp:
     def open_3d_view(self):
         view3d.open_view(self.root, self.body_text, "Nothing to show yet. Press Generate first.")
 
+    def _start_tool(self, script_name, title, extra_args=()):
+        """Start one of the older editors as its own window. '--from-main' makes its Back
+        button just close it (this app stays open)."""
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
+        try:
+            subprocess.Popen([sys.executable, script, "--from-main"] + list(extra_args))
+        except OSError as ex:
+            messagebox.showerror(title, "Could not start the %s:\n%s" % (title.lower(), ex))
+
     def open_manual_editor(self, project_path=None):
         """Start the manual 11-point editor (App6), optionally opening a cuboid project in it."""
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PythonApplication6.py")
-        try:
-            subprocess.Popen([sys.executable, script] + ([project_path] if project_path else []))
-        except OSError as ex:
-            messagebox.showerror("Manual editor", "Could not start the manual editor:\n%s" % ex)
+        self._start_tool("PythonApplication6.py", "Manual editor", [project_path] if project_path else [])
+
+    def open_free_form_editor(self):
+        """Start the free-form LIN/CIRC editor (App5, experimental)."""
+        self._start_tool("PythonApplication5.py", "Free-form editor")
 
     def export(self):
         if not self.body_text().strip():

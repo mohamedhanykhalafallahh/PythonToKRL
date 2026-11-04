@@ -454,14 +454,17 @@ root = tk.Tk()
 root.title("Dynamic KRL Code Generator")
 
 def go_back_to_selector():
+    """Back: close this editor. Opened from the main app (--from-main): that app is still
+    open, so just close. Started on its own: start the main app (KRL_Generator.py)."""
     try:
-        selector_script = os.path.join(os.path.dirname(__file__), 'Main_Window_Program_Selector_.py')
-        if os.path.exists(selector_script):
-            subprocess.Popen([sys.executable, selector_script])
-        else:
-            messagebox.showwarning("Not Found", "Main_Window_Program_Selector_.py was not found.")
+        if "--from-main" not in sys.argv:
+            main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KRL_Generator.py")
+            if os.path.exists(main_script):
+                subprocess.Popen([sys.executable, main_script])
+            else:
+                messagebox.showwarning("Not Found", "KRL_Generator.py was not found.")
     except Exception as ex:
-        messagebox.showerror("Error", f"Failed to open selector: {ex}")
+        messagebox.showerror("Error", f"Failed to open the main app: {ex}")
     finally:
         root.destroy()
 

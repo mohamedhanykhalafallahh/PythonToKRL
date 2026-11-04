@@ -2,6 +2,8 @@
 
 Tkinter tool that generates KUKA KRL programs offline. You design a path in the GUI and export a `.src` file. The file goes to the robot (KRC) on a USB stick, so no teaching on the smartPAD is needed. The use case is robotic extrusion / 3D printing of rounded-cuboid walls: several concentric loops ("turns") stacked in Z ("layers").
 
+**Start the program with `KRL_Generator.py`** (the all-in-one app; since step 5d it replaces the old selector). Run the tests with `python tests/regression.py`.
+
 The owner works on two PCs (office and home) and keeps them in sync through git. Keep this file up to date with decisions and progress, because it is the shared memory between machines.
 
 Working style the owner asked for: go step by step and slowly, plan before coding, and verify each change. Don't rush big rewrites.
@@ -26,22 +28,23 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 ## Files
 | File | Role |
 |---|---|
-| `PythonApplication6.py` | **Main program**, "Cuboidal KRL Code Generator". |
-| `PythonApplication7.py` | **Cylinder app** ("Cylinder KRL Code Generator", class `CylinderApp`). Inputs → `cylinder.generate` → text box, top view, 3D view, export via `krl_export` (`export_to(path)` without a dialog, for tests). |
-| `KRL_Generator.py` | **The all-in-one main app** (class `MainApp`; step 5b). Shape selector (Cuboid / Cylinder) with per-shape fields (each shape keeps its own values), common Path (E, layer height, turns, layers: exact N) and Orientation (A, B/Tilt used as typed, C, auto-orient), options (C_DIS; Helix for the cylinder only), Generate / 3D View / Export (.src or .txt) / Clear / Undo / Redo / Add Comment / Add Approach (inserted at the text cursor), a top view with zoom/pan/fit, an info line (moves, length, X/Y/Z range, max A vs travel), and an output text with its own typing undo. Menus: File (Open/Save Project, Export), Edit, Tools (3D View, Fit, Export Settings, Manual 11-point editor = App6), Help. Projects use `"app": "main"` with keys `shape`, `inputs` {common, cuboid, cylinder}, `options`, `output`. Testable methods: `set_shape`, `generate`, `export_to`, `save_project_to`, `open_project_from`, `state`/`set_state`. |
+| `KRL_Generator.py` | **START HERE: the main program** (see the next row). |
+| `KRL_Generator.py` | **The all-in-one main app and the entry point** (class `MainApp`; steps 5b–5d). Shape selector (Cuboid / Cylinder) with per-shape fields (each shape keeps its own values), common Path (E, layer height, turns, layers: exact N) and Orientation (A, B/Tilt used as typed, C, auto-orient), options (C_DIS; Helix for the cylinder only), Generate / 3D View / Export (.src or .txt) / Clear / Undo / Redo / Add Comment / Add Approach (inserted at the text cursor), a top view with zoom/pan/fit, an info line (moves, length, X/Y/Z range, max A vs travel), and an output text with its own typing undo. Menus: File (Open/Save Project, Export), Edit, Tools (3D View, Fit, Export Settings, Manual 11-point editor = App6, Free-form editor = App5; both started with `--from-main`), Help. Projects use `"app": "main"` with keys `shape`, `inputs` {common, cuboid, cylinder}, `options`, `output`. Testable methods: `set_shape`, `generate`, `export_to`, `save_project_to`, `open_project_from`, `state`/`set_state`. |
 | `cuboid.py` | Cuboid path generator (no tkinter): `generate_from_loop` (any base loop, exact counts; App6's Automate passes N+1) and the parametric `CuboidParams` / `validate` / `generate` (exact N, B used everywhere, no tilt clamp) for the main app. |
 | `cylinder.py` | Cylinder path generator (no tkinter): `CylinderParams`, `validate`, `generate` → (path_model items, info), `_lane_change` (tangent biarc between rings). |
-| `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by App6 and App7. |
-| `PythonApplication1–5.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"). |
-| `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Cylindrical opens App7, Free form opens App5. |
+| `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by the main app and App6. |
+| `PythonApplication6.py` | The old cuboid app, now the **manual 11-point editor** (advanced; opened from the main app's Tools menu). Automate uses `cuboid.py` (N+1 counting kept). Back: closes it if started with `--from-main`, otherwise starts the main app. Opens a project `.json` given on the command line. |
+| `PythonApplication5.py` | Free-form LIN/CIRC/SPLINE editor (experimental, set aside; Tools menu). Back as in App6. Still writes its own header (not `krl_export`). |
+| `PythonApplication1–4.py` | Early prototypes (unused). |
+| Retired in 5d (in git history) | `Main_Window_Program_Selector_.py` (old launcher), `PythonApplication7.py` (cylinder app; everything is in the main app), the launcher images (`KUKAPIC.png`, `cuboid_image.png`, `cylinderical_image.png`, `free_form_image.png`). |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
-| `krl_export.py` | Shared `.src` export (no tkinter): header, `ExportSettings` profiles (built-in `NOUVTETE`; JSON load/save, `active_settings`), `add_c_dis`, rounding, DEF-name check, `build_program`. Used by App6 and App7 (App5 not yet). |
+| `krl_export.py` | Shared `.src` export (no tkinter): header, `ExportSettings` profiles (built-in `NOUVTETE`; JSON load/save, `active_settings`), `add_c_dis`, rounding, DEF-name check, `build_program`. Used by the main app and App6 (App5 not yet). |
 | `export_profiles.json` | The export profiles (active + named profiles). Edited through the Export Settings dialog. Currently only "NouvTete". |
-| `project_files.py` | Project files (`.json`, no tkinter): `save_project`, `load_project` (checks app and format), `profile_mismatch`. Format 1: `format`, `app` ("cuboid"/"cylinder"), `saved`, `export_profile` (copy), plus the app's own keys. |
-| `export_settings_dialog.py` | Export Settings dialog (TOOL/BASE, motion values, decimals, header comments; Save / Save as New / Delete), shared by both apps. |
+| `project_files.py` | Project files (`.json`, no tkinter): `save_project`, `load_project` (checks app and format), `profile_mismatch`. Format 1: `format`, `app` ("main", or the old "cuboid"/"cylinder"), `saved`, `export_profile` (copy), plus the app's own keys. |
+| `export_settings_dialog.py` | Export Settings dialog (TOOL/BASE, motion values, decimals, header comments; Save / Save as New / Delete), shared by the main app and App6. |
 | `path_model.py` | Path model (no tkinter): `Pose`, `Ptp`/`Lin`/`Circ`/`Comment`/`Raw` items with `to_krl()`; `fmt()` = the ONE number formatter; `parse_krl` (text → items, exact round trip for all app output, unknown lines kept as `Raw`, case-insensitive); `path_3d` (items → 3D polylines with layer/transition flags) and `path_length`. |
 | `shapes.py` | Shape geometry (no tkinter): `rounded_rect_base`, `auto_corner_radius`, and the generic turn offset `offset_loop` (outward normals from the geometry; any order or direction). The cylinder/circle base goes here next. |
-| `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`, plus `krl_export` unit checks and an invalid-file-name check. Run after every change; `--update` only when an output change is intended. Line endings are ignored (git `autocrlf`). |
+| `tests/regression.py` | Headless regression test: App6 cases (Auto-Generate → Automate ×2 → Export, Save/Import Points) and cylinder cases (through the main app) against `tests/golden/`, plus unit and app checks (krl_export, path_model, shapes, cylinder, profiles, projects, A arrows, cuboid API, main app, old projects). `tests/fixtures/` holds an App7 project and its export (made before App7 was retired) for the old-format checks. Run after every change; `--update` only when an output change is intended. Line endings are ignored (git `autocrlf`). |
 
 ## How PythonApplication6 works
 
@@ -93,7 +96,7 @@ The `DEF` name is the file name and must pass `is_valid_program_name`.
 
 **Regression test:** it sets `krl_export.PROFILES_PATH` to a non-existent temp file, so it always uses the built-in profile, never the user's file.
 
-## How PythonApplication7 (cylinder) works
+## Cylinder (in the main app; was PythonApplication7, retired in 5d)
 Decisions from the owner (2026-11-04):
 - Concentric rings with a tangent lane change (not a continuous spiral).
 - Layer change at the seam (stepped), plus an optional helix for 1 turn.
@@ -278,5 +281,13 @@ Minor:
     - Hand-made base (`base_params` null): asks, then starts App6 with the project path. App6 now opens a `.json` given as `argv[1]` via `root.after(200, ...)`.
     - The title shows the project name, plus "(from the … app; Save Project writes the new format)" for converted projects. The old file is never changed.
     - Regression `check_old_projects`: the App7 and App6 projects made by `check_projects` open with no notice and the identical output; the App7 export is identical; Generate after opening is identical; converted values are checked; base-only gets a notice; manual base: "No" changes nothing, "Yes" starts App6 with the path; App6's start-up hook is run without `update()`. Also checked with the real event loop in a separate process. ALL IDENTICAL.
-  - Next: 5d, entry point (the main app replaces the selector; App6's Back button; App7 retires).
+  - Committed as 0ad2927.
+  - Rounding question (owner): the text box shows full precision; rounding to the profile's decimals (3) happens at EXPORT, for LIN and CIRC alike. The LIN points are just exact numbers, while CIRC vias at 45° are irrational. Left as is; the box could show rounded values later if wanted.
+  - Step 5d done: the main app is the entry point.
+    - `git rm` of the selector, App7 and the 4 launcher images.
+    - App6/App5 Back: `--from-main` → only close; otherwise start `KRL_Generator.py`. App6 opens the first existing `*.json` in argv.
+    - Main app: Tools → Free-form editor (App5); both editors are started with `--from-main`.
+    - The `project_files` wrong-app message now points to the KRL Generator.
+    - Tests: the CYL goldens run through the main app (`cyl_case_fields` fills in App7's defaults: B 20, 2 layers); `check_projects` uses the main app for the cylinder part; old-format checks use `tests/fixtures/app7_cylinder_project.json` + `APP7_CYLINDER.src` (made by App7, saved time fixed). New checks: App6 Back with and without `--from-main`, and the free-form launch args. ALL IDENTICAL. All three apps launch.
+  - Next: 5e (final checks / screenshots / docs), then 6 (PyInstaller exe) later.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

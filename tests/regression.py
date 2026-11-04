@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 APP = os.path.join(REPO, "PythonApplication6.py")
 GOLDEN = os.path.join(HERE, "golden")
+FIXTURES = os.path.join(HERE, "fixtures")   # files made by retired apps (App7 project + its export)
 sys.path.insert(0, REPO)   # the app imports its sibling modules (krl_export, ...)
 
 # name: base (Xr, Yr, Zr, L, W, tool height), automation (E, W, turns, layers),
@@ -41,7 +42,7 @@ CASES = {
 }
 
 
-# Cylinder app (PythonApplication7): input fields as typed in the GUI, plus checkboxes
+# Cylinder cases (made with PythonApplication7, now run through the main app): fields + checkboxes
 CYL_CASES = {
     "CYL_default":    dict(fields={}, orient=True, helix=False, cdis=True),
     "CYL_thick_5T":   dict(fields=dict(step="3", turns="5", layers="3", layer_height="1"), orient=True, helix=False, cdis=True),
@@ -56,34 +57,35 @@ class AppError(Exception):
     pass
 
 
+# The CYL_CASES were made with the cylinder app (PythonApplication7, retired in step 5d);
+# these were its defaults. They are filled in so the cases keep meaning the same print.
+APP7_DEFAULTS = dict(xc="535", yc="10", z0="65", inner_diameter="100", step="2", layer_height="2",
+                     turns="3", layers="2", a="180", b="20", c="180")
+CYL_SHAPE_KEYS = ("xc", "yc", "z0", "inner_diameter")
+
+
+def cyl_case_fields(case):
+    """(cylinder shape fields, common fields) for the main app, App7 defaults filled in."""
+    allf = dict(APP7_DEFAULTS, **case["fields"])
+    return ({k: allf[k] for k in CYL_SHAPE_KEYS}, {k: v for k, v in allf.items() if k not in CYL_SHAPE_KEYS})
+
+
 def run_cyl_case(case, tmpdir, name):
-    """Cylinder app: set the fields, Generate, Export. Returns {'src': text}."""
+    """Cylinder cases through the main app (KRL_Generator): fields, Generate, Export -> {'src': text}."""
     errors = []
     messagebox.showerror = lambda title, msg, **k: errors.append("%s: %s" % (title, msg))
     messagebox.showwarning = lambda title, msg, **k: errors.append("WARNING %s: %s" % (title, msg))
     messagebox.showinfo = lambda *a, **k: None
-    import PythonApplication7 as app7
-    root = tk.Tk()
-    root.withdraw()
+    root, app = _new_main_app()
     try:
-        app = app7.CylinderApp(root)
-        for key, value in case["fields"].items():
-            app.vars[key].set(value)
-        app.auto_orient_var.set(case["orient"])
-        app.helix_var.set(case["helix"])
-        app.c_dis_var.set(case["cdis"])
-        if not app.generate():
-            raise AppError("Generate failed")
-        path = os.path.join(tmpdir, name + ".src")
-        if not app.export_to(path):
-            raise AppError("Export failed")
-        with open(path) as f:
-            out = {"src": f.read()}
+        fields, common = cyl_case_fields(case)
+        src = run_main_case(app, "cylinder", fields, common,
+                            dict(orient=case["orient"], helix=case["helix"], cdis=case["cdis"]), tmpdir, name)
     finally:
         root.destroy()
     if errors:
         raise AppError("; ".join(errors))
-    return out
+    return {"src": src}
 
 
 def check_cylinder():
@@ -513,12 +515,8 @@ def check_main_app(tmpdir):
             src = run_main_case(app, "cuboid", fields, common, dict(cdis=case["cdis"]), tmpdir, name)
             if src != open(os.path.join(GOLDEN, name + ".src")).read():
                 bad.append("main app cuboid %s differs from the App6 golden" % name)
-        defaults = {k: d for k, _, d in [("a", "", "180"), ("b", "", "20"), ("c", "", "180")]}
-        for name, case in CYL_CASES.items():
-            f = dict(case["fields"])
-            fields = {k: f.pop(k) for k in ("xc", "yc", "z0", "inner_diameter") if k in f}
-            fields = dict(dict(xc="535", yc="10", z0="65", inner_diameter="100"), **fields)
-            common = dict(dict(step="2", layer_height="2", turns="3", layers="2", **defaults), **f)
+        for name, case in CYL_CASES.items():          # same app instance, after the cuboid cases
+            fields, common = cyl_case_fields(case)
             src = run_main_case(app, "cylinder", fields, common,
                                 dict(orient=case["orient"], helix=case["helix"], cdis=case["cdis"]), tmpdir, name)
             if src != open(os.path.join(GOLDEN, name + ".src")).read():
@@ -624,16 +622,15 @@ def check_old_projects(tmpdir):
     messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
     root, app = _new_main_app()
     try:
-        # App7 cylinder project
+        # App7 cylinder project (fixture made by App7 before it was retired) + App7's export
         msgs.clear()
-        p = os.path.join(tmpdir, "cyl_project.json")
+        p = os.path.join(FIXTURES, "app7_cylinder_project.json")
         saved = json.load(open(p))["output"]
         if not app.open_project_from(p) or msgs or app.shape_var.get() != "cylinder" or \
                 app.output_text.get("1.0", "end-1c") != saved:
             bad.append("old cylinder project: not opened identically (%s)" % msgs)
-        app.export_to(os.path.join(tmpdir, "CYL_MAIN.src"))
-        if open(os.path.join(tmpdir, "CYL_MAIN.src")).read().replace("CYL_MAIN", "X") != \
-                open(os.path.join(tmpdir, "CYL_A.src")).read().replace("CYL_A", "X"):
+        app.export_to(os.path.join(tmpdir, "APP7_CYLINDER.src"))
+        if open(os.path.join(tmpdir, "APP7_CYLINDER.src")).read() != open(os.path.join(FIXTURES, "APP7_CYLINDER.src")).read():
             bad.append("old cylinder project: export differs from App7's export")
         app.generate()
         if app.output_text.get("1.0", "end-1c") != saved:
@@ -675,16 +672,35 @@ def check_old_projects(tmpdir):
                 bad.append("manual-base project: 'No' changed something or started the editor")
             messagebox.askyesno = lambda *a, **k: True
             app.open_project_from(p)
-            if len(started) != 1 or started[0][-1] != p or not started[0][-2].endswith("PythonApplication6.py"):
+            if len(started) != 1 or started[0][-1] != p or not started[0][1].endswith("PythonApplication6.py") \
+                    or "--from-main" not in started[0]:
                 bad.append("manual-base project: editor not started with the project (%s)" % started)
+            started.clear()
+            app.open_free_form_editor()
+            if len(started) != 1 or not started[0][1].endswith("PythonApplication5.py") or "--from-main" not in started[0]:
+                bad.append("free-form editor not started correctly (%s)" % started)
         finally:
             KRL_Generator.subprocess.Popen = orig_popen
     finally:
         root.destroy()
-    # App6 started with a project path opens it
+    # App6 'Back': opened from the main app -> only closes; started alone -> starts the main app
+    import subprocess as _sp
     import sys as _sys
-    saved_argv = _sys.argv
-    _sys.argv = ["PythonApplication6.py", os.path.join(tmpdir, "cub_project.json")]
+    saved_argv, orig_popen = _sys.argv, _sp.Popen
+    try:
+        for argv, expect_start in ((["PythonApplication6.py", "--from-main"], False), (["PythonApplication6.py"], True)):
+            _sys.argv = argv
+            started = []
+            G = _new_app6()
+            _sp.Popen = lambda args, **k: started.append(args)
+            G["go_back_to_selector"]()          # closes the window
+            _sp.Popen = orig_popen
+            if bool(started) != expect_start or (started and not started[0][-1].endswith("KRL_Generator.py")):
+                bad.append("App6 Back with argv %s: started %s" % (argv[1:], started))
+    finally:
+        _sys.argv, _sp.Popen = saved_argv, orig_popen
+    # App6 started with a project path (as the main app does it) opens it
+    _sys.argv = ["PythonApplication6.py", "--from-main", os.path.join(tmpdir, "cub_project.json")]
     try:
         G = _new_app6()
         r = G["root"]
@@ -781,55 +797,47 @@ def check_projects(tmpdir):
     messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
     kinds = lambda: [m[0] for m in msgs]
 
-    # ---------------- cylinder app ----------------
-    import PythonApplication7 as app7
-    root = tk.Tk(); root.withdraw()
+    # ---------------- main app (cylinder) ----------------
+    root, a = _new_main_app()
     try:
-        a = app7.CylinderApp(root)
-        for k, v in dict(step="3", turns="5", layers="3", layer_height="1", b="-3").items():
-            a.vars[k].set(v)
-        a.helix_var.set(False); a.c_dis_var.set(False)
-        a.generate()
-        p1 = os.path.join(tmpdir, "cyl_project.json")
+        fields, common = cyl_case_fields({"fields": dict(step="3", turns="5", layers="3", layer_height="1", b="-3")})
+        run_main_case(a, "cylinder", fields, common, dict(cdis=False), tmpdir, "CYL_A")
+        p1 = os.path.join(tmpdir, "main_cyl_project.json")
         a.save_project_to(p1)
-        a.export_to(os.path.join(tmpdir, "CYL_A.src"))
-        b = app7.CylinderApp(tk.Toplevel(root))
+        b = __import__("KRL_Generator").MainApp(tk.Toplevel(root))
         msgs.clear()
         if not b.open_project_from(p1) or kinds():
-            bad.append("cylinder: open gave messages %s" % msgs)
-        if b.output_text.get("1.0", "end-1c") != a.output_text.get("1.0", "end-1c") or \
-                {k: v.get() for k, v in b.vars.items()} != {k: v.get() for k, v in a.vars.items()} or \
-                b.c_dis_var.get() is not False:
-            bad.append("cylinder: reopened project differs")
+            bad.append("main cylinder: open gave messages %s" % msgs)
+        if b.state() != a.state() or b.c_dis_var.get() is not False:
+            bad.append("main cylinder: reopened project differs")
         b.export_to(os.path.join(tmpdir, "CYL_B.src"))
         if open(os.path.join(tmpdir, "CYL_A.src")).read().replace("CYL_A", "X") != \
                 open(os.path.join(tmpdir, "CYL_B.src")).read().replace("CYL_B", "X"):
-            bad.append("cylinder: export after reopening differs")
+            bad.append("main cylinder: export after reopening differs")
         # hand edit is kept
         a.output_text.insert("3.0", "; my hand-written note\n")
-        p2 = os.path.join(tmpdir, "cyl_project_edited.json")
+        p2 = os.path.join(tmpdir, "main_cyl_project_edited.json")
         a.save_project_to(p2)
         msgs.clear()
         b.open_project_from(p2)
         if "; my hand-written note" not in b.output_text.get("1.0", tk.END) or kinds() != ["info"]:
-            bad.append("cylinder: hand-edited output not kept / no notice (%s)" % msgs)
+            bad.append("main cylinder: hand-edited output not kept / no notice (%s)" % msgs)
         # different export profile -> warning
         data = json.load(open(p1))
         data["export_profile"]["tool"][0] = 99.0
-        p3 = os.path.join(tmpdir, "cyl_project_profile.json")
+        p3 = os.path.join(tmpdir, "main_cyl_project_profile.json")
         json.dump(data, open(p3, "w"))
         msgs.clear()
         b.open_project_from(p3)
-        if kinds() != ["warning"] or "TOOL" not in msgs[0][1] and "tool" not in msgs[0][1]:
-            bad.append("cylinder: no profile warning (%s)" % msgs)
-        # damaged file / wrong app: refused, nothing changed
-        before = b.output_text.get("1.0", tk.END)
+        if kinds() != ["warning"] or "tool" not in msgs[0][1].lower():
+            bad.append("main cylinder: no profile warning (%s)" % msgs)
+        # damaged file: refused, nothing changed
+        before = b.state()
         p4 = os.path.join(tmpdir, "damaged.json")
         open(p4, "w").write("{ not json")
-        for path in (p4,):
-            msgs.clear()
-            if b.open_project_from(path) or kinds() != ["error"] or b.output_text.get("1.0", tk.END) != before:
-                bad.append("cylinder: damaged file not refused cleanly")
+        msgs.clear()
+        if b.open_project_from(p4) or kinds() != ["error"] or b.state() != before:
+            bad.append("main cylinder: damaged file not refused cleanly")
     finally:
         root.destroy()
 
@@ -898,7 +906,7 @@ def check_projects(tmpdir):
             bad.append("cuboid: base-only project not restored as saved")
         before = G["output_text"].get("1.0", tk.END)
         msgs.clear()
-        if G["open_project_from"](os.path.join(tmpdir, "cyl_project.json")) or kinds() != ["error"] or \
+        if G["open_project_from"](os.path.join(FIXTURES, "app7_cylinder_project.json")) or kinds() != ["error"] or \
                 "Cylinder" not in msgs[0][1] or G["output_text"].get("1.0", tk.END) != before:
             bad.append("cuboid: cylinder project not refused cleanly (%s)" % msgs)
     finally:
