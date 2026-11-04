@@ -20,12 +20,22 @@ No tkinter in this module, so it can be tested and reused on its own.
 import json
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass, field, fields
 from typing import List, Optional, Tuple
 
 import path_model as pm
 
-PROFILES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "export_profiles.json")
+def app_dir():
+    """Folder of the program: next to the .exe when packaged (PyInstaller, sys.frozen), else
+    next to this file. User files (export_profiles.json) live here, never in the temporary
+    folder a one-file exe unpacks itself into."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+PROFILES_PATH = os.path.join(app_dir(), "export_profiles.json")
 
 Frame = Tuple[float, float, float, float, float, float]   # X, Y, Z, A, B, C
 

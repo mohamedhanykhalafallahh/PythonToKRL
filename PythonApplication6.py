@@ -1332,11 +1332,14 @@ def go_back_to_selector():
     open, so just close. Started on its own: start the main app (KRL_Generator.py)."""
     try:
         if "--from-main" not in sys.argv:
-            main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KRL_Generator.py")
-            if os.path.exists(main_script):
-                subprocess.Popen([sys.executable, main_script])
+            if getattr(sys, "frozen", False):          # inside KRL_Generator.exe: start it again
+                subprocess.Popen([sys.executable])
             else:
-                messagebox.showwarning("Not Found", "KRL_Generator.py was not found.")
+                main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "KRL_Generator.py")
+                if os.path.exists(main_script):
+                    subprocess.Popen([sys.executable, main_script])
+                else:
+                    messagebox.showwarning("Not Found", "KRL_Generator.py was not found.")
     except Exception as ex:
         messagebox.showerror("Error", f"Failed to open the main app: {ex}")
     finally:

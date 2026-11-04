@@ -620,9 +620,8 @@ class MainApp:
     def _start_tool(self, script_name, title, extra_args=()):
         """Start one of the older editors as its own window. '--from-main' makes its Back
         button just close it (this app stays open)."""
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
         try:
-            subprocess.Popen([sys.executable, script, "--from-main"] + list(extra_args))
+            subprocess.Popen(tool_command(script_name) + ["--from-main"] + list(extra_args))
         except OSError as ex:
             messagebox.showerror(title, "Could not start the %s:\n%s" % (title.lower(), ex))
 
@@ -744,7 +743,106 @@ class MainApp:
         self.root.title(title)
 
 
-def main():
+# ---------------------------------------------------------------------- entry point / exe
+
+TOOLS = {"manual": "PythonApplication6.py", "freeform": "PythonApplication5.py"}
+
+
+def is_frozen():
+    """True when running as the packaged .exe (PyInstaller)."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def tool_command(script_name):
+    """Command that starts one of the older editors: the same .exe with --tool when packaged
+    (there are no .py files on the lab PC), else python + the script."""
+    if is_frozen():
+        name = [k for k, v in TOOLS.items() if v == script_name][0]
+        return [sys.executable, "--tool", name]
+    return [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)]
+
+
+def run_tool(name, args):
+    """Run an older editor in this process (they build their window when imported)."""
+    sys.argv = [TOOLS[name]] + list(args)
+    if name == "manual":
+        import PythonApplication6  # noqa: F401  (runs the manual 11-point editor)
+    else:
+        import PythonApplication5  # noqa: F401  (runs the free-form editor)
+
+
+def selftest(quiet=False):
+    """Generate and export a cuboid and a cylinder (built-in defaults) into a temporary folder,
+    check the files, and write selftest_report.txt next to the program. Returns 0 if all OK.
+    For checking the packaged .exe on a new PC: KRL_Generator.exe --selftest"""
+    import tempfile
+    lines, ok = [], True
+    originals = {f: getattr(messagebox, f) for f in ("showinfo", "showwarning", "showerror")}
+    for f in originals:                         # no pop-ups while testing
+        setattr(messagebox, f, lambda *a, **k: None)
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = MainApp(root)
+        tmp = tempfile.mkdtemp(prefix="krl_selftest_")
+        settings, profile_error = krl_export.active_settings()
+        lines.append("Program folder: %s" % krl_export.app_dir())
+        if not os.path.exists(krl_export.PROFILES_PATH):
+            source = "built-in, no export_profiles.json next to the program"
+        else:
+            source = profile_error or "export_profiles.json OK"
+        lines.append("Export profile: %s (%s)" % (settings.profile, source))
+        lines.append("  TOOL_DATA[%d] = {%s}" % (settings.tool_no, krl_export._frame(settings.tool)))
+        lines.append("  BASE_DATA[%d] = {%s}" % (settings.base_no, krl_export._frame(settings.base)))
+        lines.append("  decimals: %s, $APO.CDIS %s mm, VEL_CP %s m/s" % (
+            "full precision" if settings.decimals is None else settings.decimals, settings.cdis, settings.vel_cp))
+        for shape in ("cuboid", "cylinder"):
+            app.set_shape(shape)
+            good = app.generate()
+            path = os.path.join(tmp, "SELFTEST_%s.src" % shape.upper())
+            good = good and app.export_to(path)
+            text = open(path).read() if good and os.path.exists(path) else ""
+            items = pm.parse_krl(text)
+            n_moves = sum(isinstance(i, (pm.Lin, pm.Circ)) for i in items)
+            dev = max([h['dev'] for h in pm.heading_checks(items)] or [999])
+            good = good and text.startswith("&ACCESS") and text.endswith("END") and n_moves > 10 and dev < 1.0
+            ok = ok and good
+            lines.append("%-8s %s: %d moves, A vs travel max %.2f deg, %d bytes" % (
+                shape, "OK" if good else "FAIL", n_moves, dev, len(text)))
+    except Exception as ex:                     # report anything unexpected instead of crashing
+        ok = False
+        lines.append("FAIL: %s: %s" % (type(ex).__name__, ex))
+    finally:
+        root.destroy()
+        for f, fn in originals.items():
+            setattr(messagebox, f, fn)
+    lines.insert(0, "KRL Generator self-test: %s" % ("OK" if ok else "FAILED"))
+    report = "\n".join(lines)
+    try:
+        with open(os.path.join(krl_export.app_dir(), "selftest_report.txt"), "w") as f:
+            f.write(report + "\n")
+    except OSError:
+        pass
+    if not quiet:                               # the windowed .exe has no console: show it
+        r = tk.Tk()
+        r.withdraw()
+        (messagebox.showinfo if ok else messagebox.showerror)("KRL Generator self-test", report, parent=r)
+        r.destroy()
+    print(report)
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--selftest" in argv:
+        sys.exit(selftest(quiet="--quiet" in argv))
+    if "--tool" in argv:
+        i = argv.index("--tool")
+        name = argv[i + 1] if i + 1 < len(argv) else ""
+        if name not in TOOLS:
+            raise SystemExit("unknown tool %r (use: %s)" % (name, ", ".join(TOOLS)))
+        run_tool(name, argv[:i] + argv[i + 2:])
+        return
     root = tk.Tk()
     MainApp(root)
     root.mainloop()

@@ -2,7 +2,7 @@
 
 Tkinter tool that generates KUKA KRL programs offline. You design a path in the GUI and export a `.src` file. The file goes to the robot (KRC) on a USB stick, so no teaching on the smartPAD is needed. The use case is robotic extrusion / 3D printing of rounded-cuboid walls: several concentric loops ("turns") stacked in Z ("layers").
 
-**Start the program with `KRL_Generator.py`** (the all-in-one app; since step 5d it replaces the old selector). Run the tests with `python tests/regression.py`.
+**Start the program with `KRL_Generator.py`** (the all-in-one app; since step 5d it replaces the old selector). Run the tests with `python tests/regression.py`. Build the stand-alone exe with `python build_exe.py` (output: `dist/KRL_Generator.exe` + `dist/export_profiles.json`).
 
 The owner works on two PCs (office and home) and keeps them in sync through git. Keep this file up to date with decisions and progress, because it is the shared memory between machines.
 
@@ -30,6 +30,7 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 |---|---|
 | `KRL_Generator.py` | **START HERE: the main program** (see the next row). |
 | `KRL_Generator.py` | **The all-in-one main app and the entry point** (class `MainApp`; steps 5b–5d). Shape selector (Cuboid / Cylinder) with per-shape fields (each shape keeps its own values), common Path (E, layer height, turns, layers: exact N) and Orientation (A, B/Tilt used as typed, C, auto-orient), options (C_DIS; Helix for the cylinder only), Generate / 3D View / Export (.src or .txt) / Clear / Undo / Redo / Add Comment / Add Approach (inserted at the text cursor), a top view with zoom/pan/fit, an info line (moves, length, X/Y/Z range, max A vs travel), and an output text with its own typing undo. Menus: File (Open/Save Project, Export), Edit, Tools (3D View, Fit, Export Settings, Manual 11-point editor = App6, Free-form editor = App5; both started with `--from-main`), Help. Projects use `"app": "main"` with keys `shape`, `inputs` {common, cuboid, cylinder}, `options`, `output`. Testable methods: `set_shape`, `generate`, `export_to`, `save_project_to`, `open_project_from`, `state`/`set_state`. |
+| `build_exe.py` | Builds `dist/KRL_Generator.exe` (one file, windowed) with PyInstaller 5.13.2 in a private `.venv`, copies `export_profiles.json` next to it, and runs the exe's `--selftest`. `.venv/`, `build/` and `dist/` are git-ignored. |
 | `cuboid.py` | Cuboid path generator (no tkinter): `generate_from_loop` (any base loop, exact counts; App6's Automate passes N+1) and the parametric `CuboidParams` / `validate` / `generate` (exact N, B used everywhere, no tilt clamp) for the main app. |
 | `cylinder.py` | Cylinder path generator (no tkinter): `CylinderParams`, `validate`, `generate` → (path_model items, info), `_lane_change` (tangent biarc between rings). |
 | `view3d.py` | Shared 3D view window (`open_view(parent, get_text, empty_message)`), used by the main app and App6. |
@@ -302,5 +303,20 @@ Minor:
     - All 17 menu entries are wired (File: Open/Save Project, Export, Exit; Edit: Undo, Redo, Add Comment, Add Approach, Clear; Tools: 3D View, Fit, Export Settings, Manual editor, Free-form editor; Help: How to use, Current shape, Keyboard and mouse).
     - Screenshots with frame and menu were checked: main cuboid, main cylinder helix (Z +0.5 per quarter), 3D view with arrows (0 red of 154), Add Approach (pre-filled A/B/C), manual editor started with `--from-main`.
     - App6 tidy (owner's OK): title is now "Manual 11-point Cuboid Editor (advanced) - KRL Generator"; labels are "Turn Step E (mm)" / "Layer Height W (mm)". Its N+1 counting stays.
-  - Step 5 (all-in-one app) is complete. Next (Priority 3 step 6, later): a PyInstaller exe for the lab PC. Deferred: pre-export checks (step 1), App5 on `krl_export`.
+  - Step 5 (all-in-one app) is complete. Committed as aa260ff (with the App6 title/label tidy).
+- 2026-11-04: Step 6, the stand-alone exe. Owner's decisions: one-file exe; Windows 10/11 64-bit lab PC; build the exe first, polish the UI afterwards (then rebuild).
+  - 6a, exe-ready code:
+    - `krl_export.app_dir()` = the exe folder when frozen (else the source folder); `PROFILES_PATH` is there, never in the one-file temp unpack folder.
+    - `KRL_Generator.main()` switches: `--tool manual|freeform` (runs App6/App5 in-process by importing them; argv passed on), `--selftest [--quiet]`.
+    - `tool_command()`: frozen → `[exe, --tool, name]`, else `[python, script]`; the main app adds `--from-main` (+ project path).
+    - App6/App5 Back when frozen and not `--from-main`: start `sys.executable` (the exe).
+    - Self-test: generates and exports the default cuboid and cylinder to a temp folder and checks header, END, moves and A vs travel. It writes `selftest_report.txt` next to the program (git-ignored), including the active TOOL/BASE/decimals/CDIS/VEL_CP, shows a message box unless `--quiet`, and the exit code is 0 if OK.
+    - Regression `check_frozen_mode` simulates `sys.frozen` (app_dir, tool commands, App6 Back restarting the exe).
+  - 6b, `build_exe.py` (run with the 3.7 Python):
+    - Creates `.venv` with PyInstaller 5.13.2 (the last version for Python 3.7; needs internet the first time).
+    - Builds `dist/KRL_Generator.exe` (`--onefile --windowed`, hidden imports PythonApplication5/6, work/spec files in `build/`), copies `export_profiles.json` next to it, and runs `--selftest --quiet`.
+    - The exe is about 8.1 MB. `.venv`, `build/` and `dist/` are git-ignored. The only "missing module" warning is `org` (optional, from pickle).
+  - 6c, real exe tests (all OK): the self-test inside the exe (program folder = dist, profile read); a changed profile next to the exe is used after a restart (X 11.5 / 4 decimals) and the restored one again; the main window launches and stays open (screenshot); `--tool manual --from-main project.json` opens the project with all turns drawn (screenshot); `--tool freeform` opens; an unknown tool is refused.
+  - For the lab PC: copy `dist/KRL_Generator.exe` and `dist/export_profiles.json` together. `KRL_Generator.exe --selftest` shows a check, including the TCP it will write.
+  - Next: UI polish (owner agreed: after the exe; show a mock-up first), then rebuild with `python build_exe.py`. Deferred: pre-export checks (step 1), App5 on `krl_export`.
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

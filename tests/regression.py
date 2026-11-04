@@ -654,6 +654,43 @@ def check_box_rounding(tmpdir):
     return bad
 
 
+def check_frozen_mode():
+    """Packaged-exe behaviour, simulated with sys.frozen: profiles next to the .exe, the
+    editors started as 'exe --tool ...', and App6's Back restarting the exe."""
+    import subprocess as _sp
+    import sys as _sys
+    import krl_export as kx
+    import KRL_Generator as K
+    bad = []
+    fake_exe = os.path.join("C:\\", "Lab", "KRL_Generator.exe")
+    saved = (_sys.executable, getattr(_sys, "frozen", None), _sys.argv, _sp.Popen)
+    started = []
+    try:
+        _sys.frozen, _sys.executable = True, fake_exe
+        if kx.app_dir() != os.path.dirname(fake_exe):
+            bad.append("frozen: profiles not next to the exe (%s)" % kx.app_dir())
+        if K.tool_command("PythonApplication6.py") != [fake_exe, "--tool", "manual"] or \
+                K.tool_command("PythonApplication5.py") != [fake_exe, "--tool", "freeform"]:
+            bad.append("frozen: wrong tool commands")
+        _sys.executable = saved[0]                  # App6 must start with the real Python
+        _sys.argv = ["PythonApplication6.py"]
+        G = _new_app6()
+        _sys.executable = fake_exe
+        _sp.Popen = lambda args, **k: started.append(args)
+        G["go_back_to_selector"]()
+        if started != [[fake_exe]]:
+            bad.append("frozen: App6 Back did not restart the exe (%s)" % started)
+    finally:
+        _sys.executable, frozen, _sys.argv, _sp.Popen = saved
+        if frozen is None:
+            del _sys.frozen
+        else:
+            _sys.frozen = frozen
+    if K.tool_command("PythonApplication6.py")[1:] != [os.path.join(REPO, "PythonApplication6.py")]:
+        bad.append("not frozen: tool command should be python + script")
+    return bad
+
+
 def check_old_projects(tmpdir):
     """5c: the main app opens the projects of the old apps (made by check_projects):
     App7 cylinder and App6 Auto-Generate cuboid projects reproduce their saved output exactly
@@ -1044,6 +1081,7 @@ def main():
                              ("main app (KRL_Generator): same output + its functions", lambda: check_main_app(tmpdir)),
                              ("main app opens old App6 / App7 projects", lambda: check_old_projects(tmpdir)),
                              ("main app text box rounded like the export", lambda: check_box_rounding(tmpdir)),
+                             ("packaged-exe behaviour (simulated sys.frozen)", check_frozen_mode),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:
