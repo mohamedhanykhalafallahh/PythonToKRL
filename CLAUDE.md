@@ -34,7 +34,8 @@ Working style the owner asked for: go step by step and slowly, plan before codin
 | `PythonApplication1–5, 7.py` | Early prototypes. 5 = free-form LIN/CIRC/SPLINE editor (launched as "Free form"); 7 = circle drawer. |
 | `Main_Window_Program_Selector_.py` | Launcher: Cuboid opens App6, Free form opens App5, Cylindrical is a placeholder. Not the current focus. |
 | `Sequence.txt` | Design spec for the alternating spiral output order. |
-| `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`. Run after every change; `--update` only when an output change is intended. |
+| `krl_export.py` | Shared `.src` export (no tkinter): header, BASE/TOOL/speed profile (`ExportSettings`, `NOUVTETE`), `add_c_dis`, DEF-name check, `build_program`. Used by App6; App5 and the cylinder app are to follow. |
+| `tests/regression.py` | Headless regression test of App6 (Auto-Generate → Automate ×2 → Export, Save/Import Points) against `tests/golden/`, plus `krl_export` unit checks and an invalid-file-name check. Run after every change; `--update` only when an output change is intended. Line endings are ignored (git `autocrlf`). |
 
 ## How PythonApplication6 works
 
@@ -64,8 +65,8 @@ Ways to build it:
 - B = tilt angle (interface, clamped to 5–20° in the main file).
 - C = interface value.
 
-### Export (`save_krl_code`)
-Standard KUKA header (INI folds, PTP HOME). It then sets `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3]` = MHK-TOOL TCP `{X -5.711, Y 128.569, Z 204.993}`, `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` and accelerations. The generated moves and `END` follow. The `DEF` name is taken from the file name.
+### Export (`save_krl_code` → `krl_export.build_program`)
+`save_krl_code` only does the file dialog and the error message. The `.src` text comes from the shared module `krl_export.py`: the standard KUKA header (INI folds, PTP HOME), then the settings of an `ExportSettings` profile (currently `NOUVTETE` = `DEFAULT_SETTINGS`: `BASE_DATA[1] = {Z 200}`, `TOOL_DATA[3] = {X 10, Y 0, Z 205, A 180}` (assumed), `$APO.CDIS = 5`, `BAS(#VEL_CP, 2)` and accelerations), then the moves (with `add_c_dis` unless switched off) and `END`. The `DEF` name is the file name and must pass `is_valid_program_name`. To change a TCP, speed or header line, edit the profile in `krl_export.py`, not the apps.
 
 ## Known issues / refinement backlog (found 2026-11-03; [x] = fixed in PythonApplication6.py only)
 KRL / robot level:
@@ -135,5 +136,6 @@ Minor:
   - Priority 2, cylinder (App7 is only a stub with invalid KRL): 4 quarter CIRCs per loop (2 halves give an ambiguous 180° A change; many LINs give facets), with an optional helix (Z rising through each loop, no seam). Concentric turns reuse the cuboid transitions.
   - Priority 3, UI: parametric panel as the main view, pre-export checks (length, time, reach, warnings), JSON project files, A arrows in the 3D view, later a PyInstaller exe. Keep Tkinter.
   - Later, a deliberate output change: round coordinates (they are currently written like `391.59009742330267`).
-  - Step 1 done: `tests/regression.py` + `tests/golden/` (6 cases: sizes 20×20 to 600×80, E 1-3, up to 5 turns, 1-2 layers, moved centres, tilt off, C_DIS off; 18 files). It also checks that Automate is idempotent. A deliberately corrupted golden line is caught. App code unchanged.
+  - Step 1 done: `tests/regression.py` + `tests/golden/` (6 cases: sizes 20×20 to 600×80, E 1-3, up to 5 turns, 1-2 layers, moved centres, tilt off, C_DIS off; 18 files). It also checks that Automate is idempotent. A deliberately corrupted golden line is caught. App code unchanged. Committed as 5d936fc.
+  - Step 2 done: `krl_export.py` created. App6's `add_c_dis`, the regexes, the DEF-name check and the 60-line header f-string were removed; `save_krl_code` calls `krl_export.build_program(..., approximate=c_dis_var.get())`. Regression: ALL IDENTICAL (byte-identical `.src`). The app also starts normally when launched from another folder. App5 NOT switched yet (it still writes its own header with `TOOL_DATA[1] {Z 20}`, `BASE {Z 50}`); switching it changes its output, so that needs the owner's OK. JSON profiles / a settings dialog are deferred to Priority 3 (UI).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

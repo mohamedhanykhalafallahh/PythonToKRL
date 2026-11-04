@@ -8,6 +8,8 @@ import sys
 import os
 import subprocess
 
+import krl_export   # shared header / TOOL / BASE / C_DIS / DEF-name export
+
 # Variables to store the points
 points = []
 
@@ -1209,40 +1211,9 @@ def change_center():
     ok_button.grid(row=3, column=0, columnspan=7)
 
 
-_MOTION_RE = re.compile(r"^\s*(PTP|LIN|CIRC)\s*\{")
-_APPROX_RE = re.compile(r"\bC_(DIS|PTP|VEL|ORI)\b")
-
-def add_c_dis(krl_code):
-    """Append ' C_DIS' to every LIN/CIRC motion line so the robot blends through the
-    points instead of stopping at each one (distance set by $APO.CDIS in the header).
-
-    Not approximated:
-      - PTP lines (the start must be reached exactly before printing begins),
-      - the very last motion of the program (the print ends exactly on its last point),
-      - lines that already carry an approximation (so re-exporting is safe)."""
-    lines = krl_code.split("\n")
-    motion_idx = [i for i, ln in enumerate(lines) if _MOTION_RE.match(ln)]
-    if not motion_idx:
-        return krl_code
-    last = motion_idx[-1]
-    for i in motion_idx:
-        ln = lines[i]
-        if i == last or ln.lstrip().startswith("PTP"):
-            continue
-        # Keep any trailing ';' comment after the approximation keyword
-        code, sep, comment = ln.partition(";")
-        if _APPROX_RE.search(code):
-            continue
-        lines[i] = code.rstrip() + " C_DIS" + ((" " + sep + comment) if sep else "")
-    return "\n".join(lines)
-
 def save_krl_code():
-    # Get the KRL code from the output text widget
+    # Get the KRL code (motion lines) from the output text widget
     krl_code = output_text.get("1.0", tk.END)
-
-    # Approximate the moves (no stop at every point) unless switched off in the GUI
-    if c_dis_var.get():
-        krl_code = add_c_dis(krl_code)
 
     # Ask the user to choose the file format
     file_format = file_format_var.get()
@@ -1257,86 +1228,29 @@ def save_krl_code():
 
     # Prompt the user to choose the file path for saving
     file_path = filedialog.asksaveasfilename(defaultextension=default_extension, filetypes=filetypes)
+    if not file_path:
+        return
 
-    # Write the KRL code to the file if a file path is provided
-    if file_path:
-        # Extract the base filename without the extension
-        file_name = os.path.splitext(os.path.basename(file_path))[0]
+    # The DEF name is the file name, so it must be a valid KRL identifier
+    file_name = os.path.splitext(os.path.basename(file_path))[0]
+    if not krl_export.is_valid_program_name(file_name):
+        messagebox.showerror(
+            "Invalid File Name",
+            f"'{file_name}' is not a valid KRL program name.\n\n"
+            f"{krl_export.PROGRAM_NAME_RULE}\n\nNothing was saved."
+        )
+        return
 
-        # The DEF name must match the file name AND be a valid KRL identifier
-        # (letters, digits, underscore; not starting with a digit; max 24 chars).
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,23}", file_name):
-            messagebox.showerror(
-                "Invalid File Name",
-                f"'{file_name}' is not a valid KRL program name.\n\n"
-                "Use only letters, digits and '_' (no spaces or '-'), "
-                "start with a letter, max 24 characters.\n\nNothing was saved."
-            )
-            return
+    # Header (BASE/TOOL/speed/approximation) + moves (+ C_DIS unless switched off) + END,
+    # all from the shared krl_export module
+    full_code = krl_export.build_program(file_name, krl_code, krl_export.DEFAULT_SETTINGS,
+                                         approximate=c_dis_var.get())
 
-        # Create the header with the correct DEF name
-        header = f"""&ACCESS RVP
-&REL 299
-&PARAM EDITMASK = *
-&PARAM TEMPLATE = C:\\KRC\\Roboter\\Template\\vorgabe
-&PARAM DISKPATH = KRC:\\R1\\Program
-DEF {file_name}( )
-;FOLD INI;%{{PE}}
-  ;FOLD BASISTECH INI
-    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
-    INTERRUPT ON 3 
-    BAS (#INITMOV,0 )
-  ;ENDFOLD (BASISTECH INI)
-  ;FOLD SPOTTECH INI
-    USERSPOT(#INIT)
-  ;ENDFOLD (SPOTTECH INI)
-  ;FOLD GRIPPERTECH INI
-    USER_GRP(0,DUMMY,DUMMY,GDEFAULT)
-  ;ENDFOLD (GRIPPERTECH INI)
-  ;FOLD USER INI
-    ;Make your modifications here
-  ;ENDFOLD (USER INI)
-;ENDFOLD (INI)
-;FOLD PTP HOME  Vel= 100 % DEFAULT;%{{PE}}%MKUKATPBASIS,%CMOVE,%VPTP,%P 1:PTP, 2:HOME, 3:, 5:100, 7:DEFAULT
-$BWDSTART = FALSE
-PDAT_ACT=PDEFAULT
-FDAT_ACT=FHOME
-BAS (#PTP_PARAMS,100 )
-$H_POS=XHOME
-PTP  XHOME
-;ENDFOLD
-; Define base with Tool 3 - Optimized for comfortable robot positioning
-BASE_DATA[1] = {{X 0.0, Y 0.0, Z 200.0, A 0.0, B 0.0, C 0.0}}
-$BASE = BASE_DATA[1]
-; Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)
-; Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0
-TOOL_DATA[3] = {{X 10.0, Y 0.0, Z 205.0, A 180.0, B 0.0, C 0.0}}
-$TOOL = TOOL_DATA[3]
-; Set frame data for proper tool usage
-FDAT_ACT = {{TOOL_NO 3, BASE_NO 1, IPO_FRAME #BASE}}
-; Set approximation for smooth motion
-$APO.CDIS = 5.0
-$APO.CPTP = 50
-; Velocities and accelerations
-BAS (#VEL_PTP, 100)
-BAS (#VEL_CP, 2)
-BAS (#ACC_CP, 100)
-$ACC_AXIS[1]=100
-$ACC_AXIS[2]=100
-$ACC_AXIS[3]=100
-$ACC_AXIS[4]=100
-$ACC_AXIS[5]=100
-$ACC_AXIS[6]=100\n"""
+    with open(file_path, "w") as file:
+        file.write(full_code)
 
-        # Combine the header with the KRL code
-        full_code = header + krl_code + "END"
-
-        # Write the full code to the file
-        with open(file_path, "w") as file:
-            file.write(full_code)
-
-        # Show a message box indicating that the KRL code has been saved
-        messagebox.showinfo("KRL Code Exported", "The KRL code has been exported successfully.")
+    # Show a message box indicating that the KRL code has been saved
+    messagebox.showinfo("KRL Code Exported", "The KRL code has been exported successfully.")
 
 def import_points():
     file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])

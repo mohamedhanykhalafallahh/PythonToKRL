@@ -23,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 APP = os.path.join(REPO, "PythonApplication6.py")
 GOLDEN = os.path.join(HERE, "golden")
+sys.path.insert(0, REPO)   # the app imports its sibling modules (krl_export, ...)
 
 # name: base (Xr, Yr, Zr, L, W, tool height), automation (E, W, turns, layers),
 #       tilt angle, auto-orient on/off, C_DIS on/off
@@ -120,6 +121,57 @@ def run_case(case, tmpdir, name):
     return out
 
 
+def check_krl_export():
+    """Unit checks of the shared export module. Returns a list of failure messages."""
+    import krl_export as kx
+    bad = []
+    for name in ("REG_1", "_a", "A" * 24):
+        if not kx.is_valid_program_name(name):
+            bad.append("valid name rejected: %r" % name)
+    for name in ("1abc", "my prog", "a-b", "", "A" * 25, "ä"):
+        if kx.is_valid_program_name(name):
+            bad.append("invalid name accepted: %r" % name)
+    try:
+        kx.build_program("bad name", "")
+        bad.append("build_program accepted an invalid name")
+    except ValueError:
+        pass
+    body = ("PTP {X 1, Y 2, Z 3}\n; comment\nLIN {X 1, Y 2, Z 3} ; keep\n"
+            "CIRC {X 1, Y 1, Z 1},{X 2, Y 2, Z 2}\nLIN {X 4, Y 5, Z 6}\n")
+    once = kx.add_c_dis(body)
+    expected = ("PTP {X 1, Y 2, Z 3}\n; comment\nLIN {X 1, Y 2, Z 3} C_DIS ; keep\n"
+                "CIRC {X 1, Y 1, Z 1},{X 2, Y 2, Z 2} C_DIS\nLIN {X 4, Y 5, Z 6}\n")
+    if once != expected:
+        bad.append("add_c_dis output unexpected:\n%s" % once)
+    if kx.add_c_dis(once) != once:
+        bad.append("add_c_dis is not idempotent")
+    return bad
+
+
+def check_invalid_name_not_saved(tmpdir):
+    """Exporting to an invalid KRL name must show an error and write nothing."""
+    errors = []
+    messagebox.showerror = lambda title, msg, **k: errors.append(title)
+    target = os.path.join(tmpdir, "bad name.src")
+    filedialog.asksaveasfilename = lambda **k: target
+    tk.Tk.mainloop = lambda self, n=0: None
+    with contextlib.redirect_stdout(io.StringIO()):
+        g = runpy.run_path(APP, run_name="__app__")
+    G = g["automate"].__globals__
+    G["root"].withdraw()
+    try:
+        G["output_text"].insert(tk.END, "PTP {X 1, Y 2, Z 3}\n")
+        G["save_krl_code"]()
+    finally:
+        G["root"].destroy()
+    bad = []
+    if errors != ["Invalid File Name"]:
+        bad.append("expected one 'Invalid File Name' error, got %r" % errors)
+    if os.path.exists(target):
+        bad.append("a file was written for an invalid name")
+    return bad
+
+
 def first_diff(a, b):
     la, lb = a.splitlines(), b.splitlines()
     for i in range(max(len(la), len(lb))):
@@ -154,13 +206,24 @@ def main():
                     print("MISSING %s (run with --update first)" % fname)
                     failed += 1
                     continue
-                with open(path, newline="") as f:
+                # Default newline handling: git may check the goldens out with CRLF
+                # (core.autocrlf), so line endings must not count as a difference.
+                with open(path) as f:
                     expected = f.read()
                 if expected == text:
                     print("ok     %s" % fname)
                 else:
                     print("DIFF   %s: %s" % (fname, first_diff(expected, text)))
                     failed += 1
+        for label, check in (("krl_export unit checks", check_krl_export),
+                             ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
+            problems = check()
+            if problems:
+                failed += len(problems)
+                for p in problems:
+                    print("FAIL   %s: %s" % (label, p))
+            else:
+                print("ok     %s" % label)
     print("\n%s" % ("ALL IDENTICAL" if not failed else "%d PROBLEM(S)" % failed))
     return 1 if failed else 0
 
