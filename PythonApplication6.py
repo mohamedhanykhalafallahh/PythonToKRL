@@ -589,17 +589,22 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                             turn_points[i][0] -= e * turn
                         i += 1
                     elif k == "CIRC":
+                        # The via point sits at 45° on the fillet. Offsetting the edges by
+                        # d = e*turn grows the fillet radius by d around the same centre,
+                        # so the via point must move d/sqrt(2) in X and in Y (not d/2),
+                        # otherwise the arc is no longer tangent to the edges.
+                        via_shift = e * turn * (2 ** -0.5)
                         if j == 0:
-                            turn_points_circ[j][0] += (e * turn / 2)
-                            turn_points_circ[j][1] -= (e * turn / 2)
+                            turn_points_circ[j][0] += via_shift
+                            turn_points_circ[j][1] -= via_shift
                             turn_points_circ[j + 1][0] += e * turn
                         elif j == 2:
-                            turn_points_circ[j][0] += (e * turn / 2)
-                            turn_points_circ[j][1] += (e * turn / 2)
+                            turn_points_circ[j][0] += via_shift
+                            turn_points_circ[j][1] += via_shift
                             turn_points_circ[j + 1][1] += e * turn
                         elif j == 4:
-                            turn_points_circ[j][0] -= (e * turn / 2)
-                            turn_points_circ[j][1] += (e * turn / 2)
+                            turn_points_circ[j][0] -= via_shift
+                            turn_points_circ[j][1] += via_shift
                             turn_points_circ[j + 1][0] -= e * turn
                         j += 2
             
@@ -672,11 +677,12 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                     prev_data = saved_points[prev_layer][prev_last_turn]
                     prev_points = prev_data['points']
                     prev_points_circ = prev_data['points_circ']
-                    last_point_prev_layer = get_last_point_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
-                    
-                    # Create CIRC transition from previous layer's last point to current layer's first point
-                    # Pass turn_points[1] to calculate correct A-angle for the next edge
-                    create_circ_transition(last_point_prev_layer, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg)
+                    before_last_prev_layer, last_point_prev_layer = get_last_two_points_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
+
+                    # Tangent transition from previous layer's last point to current layer's first point
+                    # (incoming direction from the last move, outgoing direction toward turn_points[1])
+                    create_circ_transition(last_point_prev_layer, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg,
+                                           prev_point=before_last_prev_layer)
             else:  # Not the first turn - need transition
                 # Create transition from previous turn's end to current turn's start
                 prev_turn = turn_order[turn_idx - 1]
@@ -685,11 +691,12 @@ def automate_alternating_spiral(e, w, turns, layers, a, b, c, tilt_angle_deg):
                 prev_points_circ = prev_data['points_circ']
                 
                 # Find the last point of the previous turn (end of 11-point path)
-                last_point_prev = get_last_point_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
-                
-                # Create CIRC transition from last point of previous turn to first point of current turn
-                # Pass turn_points[1] to calculate correct A-angle for the next edge
-                create_circ_transition(last_point_prev, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg)
+                before_last_prev, last_point_prev = get_last_two_points_of_turn(prev_points, prev_points_circ, prev_data['motion_commands'])
+
+                # Tangent transition from last point of previous turn to first point of current turn
+                # (incoming direction from the last move, outgoing direction toward turn_points[1])
+                create_circ_transition(last_point_prev, turn_points[0], turn_points[1], a, b, c, tilt_angle_deg,
+                                       prev_point=before_last_prev)
             
             # Update global points for visualization
             points = copy.deepcopy(turn_points)
@@ -727,8 +734,106 @@ def get_last_point_of_turn(turn_points, turn_points_circ, turn_motion_commands):
     
     return last_point
 
-def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle_deg):
-    """Create a CIRC transition between two points with intermediate point"""
+def get_last_two_points_of_turn(turn_points, turn_points_circ, turn_motion_commands):
+    """Return (second-to-last, last) point of a turn's path, i.e. the start and end
+    of its final move. Used to know the travel direction arriving at a transition."""
+    i = 1
+    j = 0
+    prev_point = None
+    last_point = turn_points[0]
+    for k in turn_motion_commands:
+        prev_point = last_point
+        if k == "LIN":
+            last_point = turn_points[i]
+            i += 1
+        elif k == "CIRC":
+            last_point = turn_points_circ[j + 1]
+            j += 2
+    return prev_point, last_point
+
+def _fillet_transition(prev_point, from_point, to_point, next_point, c, tilt_angle_deg):
+    """Exact tangent transition between two turns (or layers).
+
+    The path arrives at from_point travelling along (prev_point -> from_point) and must
+    leave to_point travelling along (to_point -> next_point). The two lines meet at a
+    corner K. A round fillet tangent to both lines needs the same distance to K on both
+    sides, but from_point and to_point usually lie on different rings (one E apart), so the
+    distances differ. We therefore use the shorter distance L for the fillet and fill the
+    difference with a straight LIN along the longer side:
+        [LIN from_point -> F1]   CIRC F1 -> via -> F2   [LIN F2 -> to_point]
+    Every join is tangent (0 deg kink). Returns False if the geometry does not allow it
+    (caller then falls back to the old 20% rule)."""
+    if prev_point is None or next_point is None:
+        return False
+    sx, sy = from_point[0], from_point[1]
+    tx, ty = to_point[0], to_point[1]
+    uix, uiy = sx - prev_point[0], sy - prev_point[1]
+    uox, uoy = next_point[0] - tx, next_point[1] - ty
+    li, lo = math.hypot(uix, uiy), math.hypot(uox, uoy)
+    if li < 1e-9 or lo < 1e-9:
+        return False
+    uix, uiy, uox, uoy = uix / li, uiy / li, uox / lo, uoy / lo
+
+    cross = uix * uoy - uiy * uox          # >0: left (CCW) turn, <0: right turn
+    dot = uix * uox + uiy * uoy
+    turn = math.atan2(cross, dot)          # signed turning angle
+    if abs(cross) < 1e-6 or abs(turn) > math.radians(170):
+        return False                       # parallel / U-turn: no sensible fillet
+
+    # Corner K: from_point + a*u_in == to_point - b*u_out
+    dx, dy = tx - sx, ty - sy
+    a_len = (dx * uoy - dy * uox) / cross  # distance from from_point to K
+    b_len = (uix * dy - uiy * dx) / cross  # distance from K to to_point
+    if a_len <= 1e-6 or b_len <= 1e-6:
+        return False                       # corner lies behind us: not a simple corner
+    kx, ky = sx + a_len * uix, sy + a_len * uiy
+
+    L = min(a_len, b_len)                  # tangent length of the fillet
+    R = L / math.tan(abs(turn) / 2)        # fillet radius
+    f1x, f1y = kx - L * uix, ky - L * uiy  # fillet start (on incoming line)
+    f2x, f2y = kx + L * uox, ky + L * uoy  # fillet end   (on outgoing line)
+    side = 1.0 if cross > 0 else -1.0
+    cx_, cy_ = f1x - side * uiy * R, f1y + side * uix * R   # fillet centre
+    kcx, kcy = kx - cx_, ky - cy_
+    kc = math.hypot(kcx, kcy)
+    vx, vy = cx_ + R * kcx / kc, cy_ + R * kcy / kc         # via = arc midpoint
+
+    # Z: rise linearly with path length (layer transitions change Z)
+    lin1, arc, lin2 = a_len - L, R * abs(turn), b_len - L
+    total = lin1 + arc + lin2
+    z0, z1 = from_point[2], to_point[2]
+    def z_at(s):
+        return z0 + (z1 - z0) * (s / total if total > 0 else 1.0)
+    zf1, zv, zf2 = z_at(lin1), z_at(lin1 + arc / 2), z_at(lin1 + arc)
+
+    draw_point(vx, vy, "purple")
+    if lin1 > 1e-6:
+        # Straight continuation of the incoming edge: A stays as it is
+        a_now = get_current_a_angle()
+        draw_line(sx, sy, f1x, f1y, "LIN")
+        output_text.insert(tk.END, f"LIN {{X {f1x}, Y {f1y}, Z {zf1}, A {a_now:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+    else:
+        f1x, f1y = sx, sy
+    draw_line(f1x, f1y, vx, vy, "CIRC")
+    draw_line(vx, vy, f2x, f2y, "CIRC")
+    A_angle = calculate_transition_a_angle(uox, uoy)        # A at arc end = outgoing direction
+    if lin2 > 1e-6:
+        output_text.insert(tk.END, f"CIRC {{X {vx}, Y {vy}, Z {zv}}},{{X {f2x}, Y {f2y}, Z {zf2}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+        draw_line(f2x, f2y, tx, ty, "LIN")
+        output_text.insert(tk.END, f"LIN {{X {tx}, Y {ty}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+    else:
+        # Arc ends exactly on to_point: write to_point itself (no rounding drift)
+        output_text.insert(tk.END, f"CIRC {{X {vx}, Y {vy}, Z {zv}}},{{X {tx}, Y {ty}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
+    return True
+
+def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle_deg, prev_point=None):
+    """Create a transition between two turns/layers.
+
+    If prev_point (the point before from_point) is given, an exact tangent fillet is used
+    (see _fillet_transition). Otherwise, or if that geometry is not possible, the old
+    single CIRC with a 20%-of-chord via offset is used."""
+    if _fillet_transition(prev_point, from_point, to_point, next_point, c, tilt_angle_deg):
+        return
     # Create proper rounded transitions like the working corners
     # The key is to use perpendicular offset, not inline offset
     
