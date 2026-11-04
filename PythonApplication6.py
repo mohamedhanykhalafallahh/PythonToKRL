@@ -2133,6 +2133,7 @@ functions_menu.add_separator()
 functions_menu.add_command(label="Auto‑Generate Base\t (Ctrl+Shift+G)", command=open_generate_popup)
 functions_menu.add_separator()
 functions_menu.add_command(label="Fit Canvas to Drawing\t (double-click canvas)", command=fit_view)
+functions_menu.add_separator()
 functions_menu.add_command(label="3D View\t (Ctrl+Shift+D)", command=open_3d_view)
 
 functions_mbtn.configure(menu=functions_menu)
