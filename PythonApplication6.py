@@ -1609,4 +1609,8 @@ btn_automation.pack(fill='x', padx=20, pady=50)
 
 ## Tools tab content removed (Undo/Redo moved to Functions menu)
 
+# Started with a project file (the main app opens hand-made cuboid bases here)
+if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".json") and os.path.isfile(sys.argv[1]):
+    root.after(200, lambda: open_project_from(sys.argv[1]))
+
 root.mainloop()

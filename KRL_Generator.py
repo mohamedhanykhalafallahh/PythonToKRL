@@ -78,6 +78,8 @@ HELP_GENERAL = (
     "- The text box is exported as shown: you may add comments or approach moves\n"
     "  (Edit menu, inserted at the text cursor) or edit lines by hand.\n"
     "- Save Project keeps every input and the output, to repeat a print exactly.\n"
+    "  Open Project also opens projects of the old cuboid / cylinder apps (a cuboid with a\n"
+    "  hand-made base is offered to the manual editor).\n"
     "- A base built point by point: Tools > Manual 11-point editor (advanced)."
 )
 HELP_SHAPES = {
@@ -109,6 +111,64 @@ HELP_KEYS = (
     "Ctrl+Z / Ctrl+Y  Undo / Redo (inside the text box: undo / redo your typing)\n\n"
     "Top view: mouse wheel = zoom, drag = move, double-click = fit."
 )
+
+
+# ---------------------------------------------------------------------- old project files
+
+def _num(v):
+    """Number as field text with full precision: 535.0 -> '535', 22.5 -> '22.5'."""
+    s = repr(float(v))
+    return s[:-2] if s.endswith(".0") else s
+
+
+def state_from_cylinder_project(data):
+    """App7 project -> main-app state (same fields, exact counts, same generator)."""
+    inp = data.get("inputs", {})
+    return {"shape": "cylinder",
+            "inputs": {"common": {k: inp[k] for k in ("step", "layer_height", "turns", "layers", "a", "b", "c")
+                                  if k in inp},
+                       "cylinder": {k: inp[k] for k in ("xc", "yc", "z0", "inner_diameter") if k in inp}},
+            "options": dict(data.get("options", {})),
+            "output": data.get("output", "")}
+
+
+def state_from_cuboid_project(data):
+    """App6 project -> main-app state, or None if its base was made by hand (no Auto-Generate
+    parameters). App6 counted N+1 turns/layers and clamped the tilt to 5..20 deg; the main app
+    is exact and uses B as typed, so the values are converted to give the same print."""
+    bp = data.get("base_params")
+    if not bp:
+        return None
+    ent = data.get("entries", {})
+    opts = data.get("options", {})
+    auto = bool(opts.get("auto_orient", True))
+
+    def plus_one(key):
+        text = str(ent.get(key, "")).strip()
+        try:
+            return str(int(float(text)) + 1)
+        except ValueError:
+            return None
+    common = {"step": ent.get("E", ""), "layer_height": ent.get("W", ""), "a": ent.get("A", "180"),
+              "c": ent.get("C", "180")}
+    for key, name in (("turns", "turns"), ("layers", "layers")):
+        v = plus_one(key)
+        if v is not None:
+            common[name] = v
+    if auto:
+        try:
+            common["b"] = _num(max(5.0, min(float(ent.get("tilt", "")), 20.0)))
+        except ValueError:
+            pass
+    else:
+        common["b"] = ent.get("B", "0")
+    common = {k: v for k, v in common.items() if str(v).strip() != ""}
+    shape = {"xc": _num(bp["Xr"]), "yc": _num(bp["Yr"]), "z0": _num(bp["Zr"] + bp["Th"]),
+             "length": _num(bp["L"]), "width": _num(bp["W"]),
+             "corner_radius": "" if bp.get("r_auto") else _num(bp["r"])}
+    return {"shape": "cuboid", "inputs": {"common": common, "cuboid": shape},
+            "options": {"auto_orient": auto, "c_dis": bool(opts.get("c_dis", True)), "helix": False},
+            "output": data.get("output", "")}
 
 
 class MainApp:
@@ -325,8 +385,15 @@ class MainApp:
             self.set_state(self.redo_stack.pop())
 
     # ================================================================== generate
-    def read_params(self):
-        """Parameters of the current shape, or None (after an error message)."""
+    def read_params(self, quiet=False):
+        """Parameters of the current shape, or None (after an error message unless quiet)."""
+        if quiet:
+            show = messagebox.showerror
+            messagebox.showerror = lambda *a, **k: None
+            try:
+                return self.read_params()
+            finally:
+                messagebox.showerror = show
         shape = self.shape_var.get()
         fs = self.shape_vars[shape]
         try:
@@ -516,10 +583,11 @@ class MainApp:
     def open_3d_view(self):
         view3d.open_view(self.root, self.body_text, "Nothing to show yet. Press Generate first.")
 
-    def open_manual_editor(self):
+    def open_manual_editor(self, project_path=None):
+        """Start the manual 11-point editor (App6), optionally opening a cuboid project in it."""
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PythonApplication6.py")
         try:
-            subprocess.Popen([sys.executable, script])
+            subprocess.Popen([sys.executable, script] + ([project_path] if project_path else []))
         except OSError as ex:
             messagebox.showerror("Manual editor", "Could not start the manual editor:\n%s" % ex)
 
@@ -560,6 +628,7 @@ class MainApp:
         except OSError as ex:
             messagebox.showerror("Save Project", "Could not save the project:\n%s" % ex)
             return False
+        self._set_title(path)
         return True
 
     def open_project(self):
@@ -571,31 +640,60 @@ class MainApp:
         """Restore everything, regenerate, and keep the SAVED output if it differs (hand
         edits or a program change). One undo step. Returns True if loaded."""
         try:
-            data = project_files.load_project(path, "main")
+            data = project_files.load_project_any(path)
         except project_files.ProjectError as ex:
             messagebox.showerror("Open Project", str(ex))
             return False
+        kind = data["app"]
+        if kind == "main":
+            st = data
+        elif kind == "cylinder":
+            st = state_from_cylinder_project(data)
+        else:
+            st = state_from_cuboid_project(data)
+            if st is None:
+                if messagebox.askyesno(
+                        "Open Project",
+                        "This cuboid project has a base made point by point (manual or imported), "
+                        "which has no size parameters.\n\nOpen it in the Manual 11-point editor?"):
+                    self.open_manual_editor(path)
+                return False
         self.push_undo()
-        saved = data.get("output", "")
-        self.set_state(data, redraw=False)
+        saved = st.get("output", "")
+        self.set_state(st, redraw=False)
         if saved.strip():
-            p = self.read_params()
-            same = False
-            if p is not None and not self._generator().validate(p)[0]:
-                items, _ = self._generator().generate(p)
-                same = pm.program_to_krl(items) + "\n" == saved
-            if not same:
+            if kind == "cuboid" and "===== LAYER" not in saved:
                 messagebox.showinfo("Open Project",
-                                    "The saved output differs from what this version generates "
-                                    "(hand edits, or a program change).\n\nThe SAVED output was kept. "
-                                    "Press Generate to regenerate it from the inputs.")
+                                    "This cuboid project was saved before Automate (base loop only).\n\n"
+                                    "The sizes were loaded and the saved output was kept. Press Generate "
+                                    "to create the print.")
+            else:
+                p = self.read_params(quiet=True)
+                same = False
+                if p is not None and not self._generator().validate(p)[0]:
+                    items, _ = self._generator().generate(p)
+                    same = pm.program_to_krl(items) + "\n" == saved
+                if not same:
+                    messagebox.showinfo("Open Project",
+                                        "The saved output differs from what this version generates "
+                                        "(hand edits, or a program change).\n\nThe SAVED output was kept. "
+                                        "Press Generate to regenerate it from the inputs.")
         self.view = None
         self.redraw()
         self._update_info()
+        self._set_title(path, converted_from=None if kind == "main" else project_files.APP_NAMES[kind])
         warning = project_files.profile_mismatch(data)
         if warning:
             messagebox.showwarning("Open Project", warning)
         return True
+
+    def _set_title(self, path=None, converted_from=None):
+        title = APP_TITLE
+        if path:
+            title += " - " + os.path.basename(path)
+            if converted_from:
+                title += " (from the %s; Save Project writes the new format)" % converted_from
+        self.root.title(title)
 
 
 def main():

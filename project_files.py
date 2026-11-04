@@ -57,6 +57,18 @@ def load_project(path, app):
     return data
 
 
+def load_project_any(path):
+    """Like load_project, but accepts every known app ("main", "cuboid", "cylinder")."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as ex:
+        raise ProjectError("Could not read the project file:\n%s" % ex)
+    if not isinstance(data, dict) or "format" not in data or data.get("app") not in APP_NAMES:
+        raise ProjectError("This is not a PythonToKRL project file.")
+    return load_project(path, data["app"])
+
+
 def profile_mismatch(data):
     """Warning text if the project's export profile differs from the active one (else None)."""
     saved = data.get("export_profile")

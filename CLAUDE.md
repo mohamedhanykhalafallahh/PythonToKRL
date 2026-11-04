@@ -270,5 +270,13 @@ Minor:
     - Regression `check_main_app`: the new app reproduces EVERY auto-orient App6 golden (App6 N+1 entered as N) and every App7 golden byte for byte from the same inputs. It also checks shape switching keeping values (and helix shown only for the cylinder), undo/redo of Generate/Clear, comment and approach inserted at the cursor (undoable), the project round trip, a hand edit kept with a notice, an old cylinder project refused (until 5c), and refused Generates leaving the state unchanged. ALL IDENTICAL.
     - Screenshots checked (cuboid and cylinder). Launches from another folder.
     - Owner's defaults (2026-11-04): cuboid Length X 150 × Width Y 300, Number of Layers 3, B / Tilt 0 (turns 3, E 2, layer height 2, A 180, C 180, centre 535/10, Start Z 65; cylinder inner Ø 100).
-  - Next: 5c, open old App6/App7 project files in the main app.
+  - Committed as 8d415da.
+  - Step 5c done: the main app opens old projects (`project_files.load_project_any`; converters `state_from_cylinder_project` / `state_from_cuboid_project` in KRL_Generator).
+    - App7 cylinder: 1:1.
+    - App6 cuboid with `base_params`: Xr/Yr → centre, Zr+Th → Start Z, L/W, corner radius (blank if `r_auto`), E/W entries → step/layer height, turns/layers **+1** (N+1 → exact), B = the clamped tilt (auto-orient) or the B entry (off). Numbers are written with `_num` (full precision, not `%g`).
+    - Base-only App6 project (no LAYER comments): sizes are loaded, the output is kept, with a notice.
+    - Hand-made base (`base_params` null): asks, then starts App6 with the project path. App6 now opens a `.json` given as `argv[1]` via `root.after(200, ...)`.
+    - The title shows the project name, plus "(from the … app; Save Project writes the new format)" for converted projects. The old file is never changed.
+    - Regression `check_old_projects`: the App7 and App6 projects made by `check_projects` open with no notice and the identical output; the App7 export is identical; Generate after opening is identical; converted values are checked; base-only gets a notice; manual base: "No" changes nothing, "Yes" starts App6 with the path; App6's start-up hook is run without `update()`. Also checked with the real event loop in a separate process. ALL IDENTICAL.
+  - Next: 5d, entry point (the main app replaces the selector; App6's Back button; App7 retires).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

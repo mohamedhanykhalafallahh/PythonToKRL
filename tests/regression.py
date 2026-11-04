@@ -590,9 +590,10 @@ def check_main_app(tmpdir):
             bad.append("main app: hand-edited project output not kept / no notice")
         msgs.clear()
         before = app2.state()
-        if app2.open_project_from(os.path.join(tmpdir, "cyl_project.json")) or app2.state() != before \
-                or [m[0] for m in msgs] != ["error"]:
-            bad.append("main app: old cylinder project was not refused cleanly (5c will open it)")
+        p_bad = os.path.join(tmpdir, "not_a_project.json")
+        open(p_bad, "w").write('{"something": 1}')
+        if app2.open_project_from(p_bad) or app2.state() != before or [m[0] for m in msgs] != ["error"]:
+            bad.append("main app: a non-project JSON file was not refused cleanly")
 
         # ---- input errors leave everything unchanged
         before = app.state()
@@ -606,6 +607,98 @@ def check_main_app(tmpdir):
             bad.append("main app: a refused Generate changed the state")
     finally:
         root.destroy()
+    return bad
+
+
+def check_old_projects(tmpdir):
+    """5c: the main app opens the projects of the old apps (made by check_projects):
+    App7 cylinder and App6 Auto-Generate cuboid projects reproduce their saved output exactly
+    (no notice) and export the same .src; a base-only App6 project loads with a notice; a
+    hand-made base is handed to the manual editor (App6 started with the project path)."""
+    import json
+    import KRL_Generator
+    bad = []
+    msgs = []
+    messagebox.showinfo = lambda *a, **k: msgs.append(("info", a[1] if len(a) > 1 else ""))
+    messagebox.showwarning = lambda *a, **k: msgs.append(("warning", a[1] if len(a) > 1 else ""))
+    messagebox.showerror = lambda *a, **k: msgs.append(("error", a[1] if len(a) > 1 else ""))
+    root, app = _new_main_app()
+    try:
+        # App7 cylinder project
+        msgs.clear()
+        p = os.path.join(tmpdir, "cyl_project.json")
+        saved = json.load(open(p))["output"]
+        if not app.open_project_from(p) or msgs or app.shape_var.get() != "cylinder" or \
+                app.output_text.get("1.0", "end-1c") != saved:
+            bad.append("old cylinder project: not opened identically (%s)" % msgs)
+        app.export_to(os.path.join(tmpdir, "CYL_MAIN.src"))
+        if open(os.path.join(tmpdir, "CYL_MAIN.src")).read().replace("CYL_MAIN", "X") != \
+                open(os.path.join(tmpdir, "CYL_A.src")).read().replace("CYL_A", "X"):
+            bad.append("old cylinder project: export differs from App7's export")
+        app.generate()
+        if app.output_text.get("1.0", "end-1c") != saved:
+            bad.append("old cylinder project: Generate after opening differs")
+        # App6 Auto-Generate cuboid project (r 30, 250 x 120, E 2, W 1.5, turns 3 -> 4, layers 1 -> 2, tilt 15)
+        msgs.clear()
+        p = os.path.join(tmpdir, "cub_project.json")
+        saved = json.load(open(p))["output"]
+        if not app.open_project_from(p) or msgs or app.shape_var.get() != "cuboid" or \
+                app.output_text.get("1.0", "end-1c") != saved:
+            bad.append("old cuboid project: not opened identically (%s)" % msgs)
+        st = app.state()
+        if (st["inputs"]["cuboid"]["length"], st["inputs"]["cuboid"]["corner_radius"], st["inputs"]["common"]["turns"],
+                st["inputs"]["common"]["layers"], st["inputs"]["common"]["b"]) != ("250", "30", "4", "2", "15"):
+            bad.append("old cuboid project: converted values wrong: %s" % st["inputs"])
+        app.generate()
+        if app.output_text.get("1.0", "end-1c") != saved:
+            bad.append("old cuboid project: Generate after opening differs")
+        if "from the Cuboid" not in root.title():
+            bad.append("old cuboid project: title does not say it was converted (%r)" % root.title())
+        # base-only App6 project: loaded with a notice, output kept
+        msgs.clear()
+        p = os.path.join(tmpdir, "cub_base_only.json")
+        if not app.open_project_from(p) or [m[0] for m in msgs] != ["info"] or \
+                app.output_text.get("1.0", "end-1c") != json.load(open(p))["output"]:
+            bad.append("base-only cuboid project: not loaded with a notice (%s)" % msgs)
+        # hand-made base: offered to the manual editor
+        data = json.load(open(os.path.join(tmpdir, "cub_project.json")))
+        data["base_params"] = None
+        p = os.path.join(tmpdir, "cub_manual_base.json")
+        json.dump(data, open(p, "w"))
+        started = []
+        orig_popen = KRL_Generator.subprocess.Popen
+        KRL_Generator.subprocess.Popen = lambda args, **k: started.append(args)
+        try:
+            before = app.state()
+            messagebox.askyesno = lambda *a, **k: False
+            if app.open_project_from(p) or app.state() != before or started:
+                bad.append("manual-base project: 'No' changed something or started the editor")
+            messagebox.askyesno = lambda *a, **k: True
+            app.open_project_from(p)
+            if len(started) != 1 or started[0][-1] != p or not started[0][-2].endswith("PythonApplication6.py"):
+                bad.append("manual-base project: editor not started with the project (%s)" % started)
+        finally:
+            KRL_Generator.subprocess.Popen = orig_popen
+    finally:
+        root.destroy()
+    # App6 started with a project path opens it
+    import sys as _sys
+    saved_argv = _sys.argv
+    _sys.argv = ["PythonApplication6.py", os.path.join(tmpdir, "cub_project.json")]
+    try:
+        G = _new_app6()
+        r = G["root"]
+        # run exactly the callbacks App6 scheduled at start-up (no update(): it would also run
+        # stale events of earlier test windows)
+        pending = r.tk.splitlist(r.tk.call("after", "info"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for aid in pending:
+                r.tk.call(r.tk.splitlist(r.tk.call("after", "info", aid))[0])
+        if not pending or not G["points"] or "===== LAYER" not in G["output_text"].get("1.0", tk.END):
+            bad.append("App6 started with a project path did not open it (%d callbacks)" % len(pending))
+        G["root"].destroy()
+    finally:
+        _sys.argv = saved_argv
     return bad
 
 
@@ -893,6 +986,7 @@ def main():
                              ("head direction A vs travel + 3D arrows", check_heading),
                              ("cuboid.py parametric API reproduces the App6 goldens", check_cuboid_params),
                              ("main app (KRL_Generator): same output + its functions", lambda: check_main_app(tmpdir)),
+                             ("main app opens old App6 / App7 projects", lambda: check_old_projects(tmpdir)),
                              ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
             problems = check()
             if problems:
