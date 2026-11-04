@@ -111,4 +111,12 @@ Minor:
   - Effect on the `.src`: transitions are now 1 or 2 lines (LIN + CIRC or CIRC + LIN) instead of 1 CIRC. The extra LIN is only E long, so C_DIS (step 2) matters there to avoid a stop.
   - Committed as 4a56bbd.
   - Step 2 done: `add_c_dis()` runs at export (`save_krl_code`), controlled by the checkable entry "Approximate Moves on Export (C_DIS)" in the Functions menu, under Auto-Orient (on by default, `c_dis_var`). It adds ` C_DIS` to every LIN/CIRC except PTP lines and the very last motion. It is idempotent and keeps trailing `;` comments. The on-screen preview is unchanged. `$APO.CDIS` stays 5 mm (owner's choice). Verified with a headless export (52 moves → 50 with C_DIS; off-export has none; header unchanged). On the robot, blending only happens in continuous run, not in single-step mode.
+- 2026-11-04: TCP switched to NouvTete (b2eb00b). Push from this PC failed (GitHub credentials), so the owner pushes manually.
+- 2026-11-04: Canvas cleanup (drawing only; KRL output verified byte-identical):
+  - Every CIRC is drawn as the real arc (`draw_arc`) instead of two straight lines, with the via dot on the arc. Transitions are drawn in purple (arc and the short LIN pieces).
+  - Labels are small and grey, placed beside the line or arc on the outside, with one label per group (same text within 12 px is skipped).
+  - The canvas keeps its 400×320 size. `visualize_cuboid()` ends with `fit_view()` (zoom + scroll so the whole drawing fits, auto-zoom capped at 3×). Mouse wheel zooms around the pointer. Double-click the canvas, or use Functions → "Fit Canvas to Drawing", to fit again. The zoom is `view_zoom` on top of `scaling_factor` and always scales about the canvas origin; dots and label offsets keep their pixel size. Clearing the canvas resets the zoom.
+  - The top-right corner looked messy before because outward, inward and layer transitions take different (real) paths there, while the other corners overlap exactly across layers. It was not leftover drawings.
+  - The manual-mode "dummy" closing CIRC drawing in `add_point` is unchanged (still two lines).
+  - Testing tip: `runpy.run_path` returns a COPY of the globals, so use `g["automate"].__globals__` for live values. For screenshots, use PowerShell `CopyFromScreen`, with Tk coordinates multiplied by the display scale (1.25 on this PC).
 - Python on the home PC: `D:\University\Microsoft Visual Studio\Shared\Python37_64\python.exe` (the `py` launcher's default 3.12 entry points to a missing file).

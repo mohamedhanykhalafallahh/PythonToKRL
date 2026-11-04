@@ -29,8 +29,19 @@ zc = 0
 canvas_width = 400
 canvas_height = 320
 
-# Initial scaling factor
+# Initial scaling factor (pixels per mm at zoom 1)
 scaling_factor = 3
+
+# Canvas view zoom on top of scaling_factor (changed by fit-to-drawing and mouse wheel).
+# All drawing uses scaling_factor * view_zoom, and zooming always scales about the canvas
+# origin (0,0) so new drawings stay aligned with what is already drawn.
+view_zoom = 1.0
+VIEW_ZOOM_MAX = 3.0          # never auto-zoom in more than 3x (single points, tiny shapes)
+POINT_RADIUS = 2             # dot radius in pixels (kept constant when zooming)
+LABEL_OFFSET = 9             # label distance from its line/arc, in pixels
+LABEL_FONT = ("Segoe UI", 7)
+LABEL_COLOR = "#9a9a9a"
+_label_offsets = {}          # canvas text id -> (ox, oy) pixel offset from its anchor
 
 # Global variable to track A-axis orientation for smooth transitions
 current_a_angle = 180.0   # Current A angle
@@ -59,6 +70,7 @@ def _restore_state(snap):
     orientations = copy.deepcopy(snap['orientations'])
     current_a_angle = snap.get('current_a_angle', 180.0)
     canvas.delete("all")
+    reset_view_zoom()
     output_text.delete("1.0", tk.END)
     output_text.insert(tk.END, snap['output_text'])
     if points:
@@ -227,31 +239,164 @@ def update_scroll_region():
         # Set the scroll region of the canvas
         canvas.config(scrollregion=bbox)
 
+def _to_canvas(x, y):
+    """World mm -> canvas pixels (Y inverted)."""
+    s = scaling_factor * view_zoom
+    return x * s, -y * s
+
 def draw_point(x, y, color="red"):
-    # Apply scaling factor to the coordinates (invert Y for canvas)
-    scaled_x = x * scaling_factor
-    scaled_y = -y * scaling_factor
-    
-    # Draw a point on the canvas
-    canvas.create_oval(scaled_x - 2, scaled_y - 2, scaled_x + 2, scaled_y + 2, fill=color)
+    cx, cy = _to_canvas(x, y)
+    r = POINT_RADIUS
+    canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color)
     update_scroll_region()
 
-def draw_line(x1, y1, x2, y2, motion_command):
-    # Apply scaling factor to the coordinates (invert Y for canvas)
-    scaled_x1 = x1 * scaling_factor
-    scaled_y1 = -y1 * scaling_factor
-    scaled_x2 = x2 * scaling_factor
-    scaled_y2 = -y2 * scaling_factor
-    
-    # Draw a line between two points on the canvas
-    canvas.create_line(scaled_x1, scaled_y1, scaled_x2, scaled_y2, fill="blue")
-    
-    # Calculate the midpoint of the line
-    midpoint_x = (scaled_x1 + scaled_x2) / 2
-    midpoint_y = (scaled_y1 + scaled_y2) / 2
-    
-    # Display the motion command type above the line
-    canvas.create_text(midpoint_x, midpoint_y, text=motion_command, fill="black", anchor='n')
+def _draw_label(ax, ay, nx, ny, text):
+    """Small grey label beside a drawing: anchor (ax, ay) in canvas px, pushed out along
+    the unit normal (nx, ny) by LABEL_OFFSET px so it does not sit on top of the line."""
+    ox, oy = nx * LABEL_OFFSET, ny * LABEL_OFFSET
+    # Turns lie only a few pixels apart: show one label per group instead of a smeared pile
+    for other in canvas.find_withtag("label"):
+        if canvas.itemcget(other, "text") == text:
+            x, y = canvas.coords(other)
+            if math.hypot(x - (ax + ox), y - (ay + oy)) < 12:
+                return
+    tid = canvas.create_text(ax + ox, ay + oy, text=text, fill=LABEL_COLOR, font=LABEL_FONT, tags=("label",))
+    _label_offsets[tid] = (ox, oy)
+
+def draw_line(x1, y1, x2, y2, motion_command, color="blue"):
+    cx1, cy1 = _to_canvas(x1, y1)
+    cx2, cy2 = _to_canvas(x2, y2)
+    canvas.create_line(cx1, cy1, cx2, cy2, fill=color)
+    # Label beside the middle of the line, on the right-hand side of travel
+    # (= outside of the shape for the counter-clockwise auto-generated loop)
+    dx, dy = cx2 - cx1, cy2 - cy1
+    d = math.hypot(dx, dy)
+    if d > 1e-9 and motion_command:
+        _draw_label((cx1 + cx2) / 2, (cy1 + cy2) / 2, -dy / d, dx / d, motion_command)
+
+def _circle_through(p1, p2, p3):
+    """Centre and radius of the circle through three 2D points, or None if collinear."""
+    (ax, ay), (bx, by), (cx, cy) = p1, p2, p3
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-9:
+        return None
+    ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+    uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+    return ux, uy, math.hypot(ax - ux, ay - uy)
+
+def draw_arc(x1, y1, xv, yv, x2, y2, motion_command="CIRC", color="blue"):
+    """Draw a CIRC as the real circular arc start -> via -> end (what the robot does),
+    instead of two straight lines. Falls back to two lines if the points are collinear."""
+    c1, cv_, c2 = _to_canvas(x1, y1), _to_canvas(xv, yv), _to_canvas(x2, y2)
+    circ = _circle_through(c1, cv_, c2)
+    if circ is None:
+        canvas.create_line(*c1, *cv_, *c2, fill=color)
+        dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+        d = math.hypot(dx, dy)
+        if d > 1e-9 and motion_command:
+            _draw_label(cv_[0], cv_[1], -dy / d, dx / d, motion_command)
+        return
+    ux, uy, R = circ
+    a1 = math.atan2(c1[1] - uy, c1[0] - ux)
+    av = math.atan2(cv_[1] - uy, cv_[0] - ux)
+    a2 = math.atan2(c2[1] - uy, c2[0] - ux)
+    two_pi = 2 * math.pi
+    # Sweep from a1 to a2 in the direction that passes through the via point
+    ccw_v = (av - a1) % two_pi
+    ccw_2 = (a2 - a1) % two_pi
+    sweep = ccw_2 if ccw_v <= ccw_2 else -(two_pi - ccw_2)
+    n = max(8, int(abs(math.degrees(sweep)) / 3))   # one segment per ~3 degrees
+    pts = []
+    for k in range(n + 1):
+        t = a1 + sweep * k / n
+        pts += [ux + R * math.cos(t), uy + R * math.sin(t)]
+    canvas.create_line(*pts, fill=color)
+    if motion_command:
+        # Label beside the middle of the arc, on the outside (away from the centre)
+        am = a1 + sweep / 2
+        mx, my = ux + R * math.cos(am), uy + R * math.sin(am)
+        _draw_label(mx, my, math.cos(am), math.sin(am), motion_command)
+
+def _apply_zoom(factor):
+    """Scale everything on the canvas about the origin by factor; keep dots and label
+    offsets at their pixel size."""
+    global view_zoom
+    view_zoom *= factor
+    canvas.scale("all", 0, 0, factor, factor)
+    r = POINT_RADIUS
+    for it in canvas.find_all():
+        t = canvas.type(it)
+        if t == "oval":
+            x0, y0, x1, y1 = canvas.coords(it)
+            mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+            canvas.coords(it, mx - r, my - r, mx + r, my + r)
+        elif t == "text" and it in _label_offsets:
+            ox, oy = _label_offsets[it]
+            x, y = canvas.coords(it)
+            canvas.coords(it, x - ox * factor + ox, y - oy * factor + oy)
+
+def _canvas_view_size():
+    w, h = canvas.winfo_width(), canvas.winfo_height()
+    if w <= 1 or h <= 1:          # not mapped yet: use the configured size
+        w, h = int(canvas.cget("width")), int(canvas.cget("height"))
+    return w, h
+
+def _show_view(left, top):
+    """Scroll so that canvas coordinate (left, top) is at the top-left of the window."""
+    w, h = _canvas_view_size()
+    bbox = canvas.bbox(tk.ALL) or (left, top, left + w, top + h)
+    x0, y0 = min(bbox[0] - 10, left), min(bbox[1] - 10, top)
+    x1, y1 = max(bbox[2] + 10, left + w), max(bbox[3] + 10, top + h)
+    canvas.config(scrollregion=(x0, y0, x1, y1))
+    canvas.xview_moveto((left - x0) / (x1 - x0))
+    canvas.yview_moveto((top - y0) / (y1 - y0))
+
+def _drawing_bbox():
+    """Bounding box of everything except the labels (so labels don't change the fit)."""
+    box = None
+    for it in canvas.find_all():
+        if "label" in canvas.gettags(it):
+            continue
+        b = canvas.bbox(it)
+        if b:
+            box = b if box is None else (min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3]))
+    return box
+
+def fit_view(event=None):
+    """Zoom and scroll so the whole drawing fits inside the canvas (canvas size unchanged)."""
+    box = _drawing_bbox()
+    if box is None:
+        return
+    w, h = _canvas_view_size()
+    margin = 25
+    bw, bh = max(box[2] - box[0], 1), max(box[3] - box[1], 1)
+    factor = min((w - 2 * margin) / bw, (h - 2 * margin) / bh)
+    factor = min(factor, VIEW_ZOOM_MAX / view_zoom)
+    if factor > 0 and abs(factor - 1) > 1e-6:
+        _apply_zoom(factor)
+    box = _drawing_bbox()
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    _show_view(cx - w / 2, cy - h / 2)
+
+def zoom_canvas(event):
+    """Mouse wheel on the canvas: zoom in/out around the mouse pointer."""
+    factor = 1.2 if event.delta > 0 else 1 / 1.2
+    px, py = canvas.canvasx(event.x), canvas.canvasy(event.y)
+    left, top = canvas.canvasx(0), canvas.canvasy(0)
+    _apply_zoom(factor)
+    # keep the point under the mouse where it was (second pass corrects border/scroll rounding)
+    new_left, new_top = px * factor - (px - left), py * factor - (py - top)
+    _show_view(new_left, new_top)
+    err_x = canvas.canvasx(event.x) - px * factor
+    err_y = canvas.canvasy(event.y) - py * factor
+    if abs(err_x) > 0.5 or abs(err_y) > 0.5:
+        _show_view(new_left - err_x, new_top - err_y)
+
+def reset_view_zoom():
+    """Called when the canvas is cleared: start again at the default scale."""
+    global view_zoom
+    view_zoom = 1.0
+    _label_offsets.clear()
 
 def visualize_cuboid():
     update_scroll_region()
@@ -267,8 +412,9 @@ def visualize_cuboid():
             start_point = points[i+1]
             i+=1
           elif k == "CIRC":
-            draw_line(start_point[0], start_point[1], points_circ[j][0], points_circ[j][1], k)
-            draw_line(points_circ[j][0], points_circ[j][1], points_circ[j+1][0], points_circ[j+1][1], k)
+            # Real arc through start -> via -> end (the via dot below sits on it)
+            draw_arc(start_point[0], start_point[1], points_circ[j][0], points_circ[j][1],
+                     points_circ[j+1][0], points_circ[j+1][1], k)
             start_point = points_circ[j+1]
             j+=2
 
@@ -278,6 +424,9 @@ def visualize_cuboid():
     # Draw points
     for point in points_circ:
         draw_point(point[0], point[1])
+
+    # Show the whole drawing inside the (fixed-size) canvas
+    fit_view()
 
 def add_point():
     global points, motion_commands
@@ -806,20 +955,20 @@ def _fillet_transition(prev_point, from_point, to_point, next_point, c, tilt_ang
         return z0 + (z1 - z0) * (s / total if total > 0 else 1.0)
     zf1, zv, zf2 = z_at(lin1), z_at(lin1 + arc / 2), z_at(lin1 + arc)
 
-    draw_point(vx, vy, "purple")
+    # Canvas: transitions are drawn in purple (real arc + straight pieces), via dot on the arc
     if lin1 > 1e-6:
         # Straight continuation of the incoming edge: A stays as it is
         a_now = get_current_a_angle()
-        draw_line(sx, sy, f1x, f1y, "LIN")
+        draw_line(sx, sy, f1x, f1y, "LIN", color="purple")
         output_text.insert(tk.END, f"LIN {{X {f1x}, Y {f1y}, Z {zf1}, A {a_now:.1f}, B {tilt_angle_deg}, C {c}}}\n")
     else:
         f1x, f1y = sx, sy
-    draw_line(f1x, f1y, vx, vy, "CIRC")
-    draw_line(vx, vy, f2x, f2y, "CIRC")
+    draw_arc(f1x, f1y, vx, vy, f2x, f2y, "CIRC", color="purple")
+    draw_point(vx, vy, "purple")
     A_angle = calculate_transition_a_angle(uox, uoy)        # A at arc end = outgoing direction
     if lin2 > 1e-6:
         output_text.insert(tk.END, f"CIRC {{X {vx}, Y {vy}, Z {zv}}},{{X {f2x}, Y {f2y}, Z {zf2}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
-        draw_line(f2x, f2y, tx, ty, "LIN")
+        draw_line(f2x, f2y, tx, ty, "LIN", color="purple")
         output_text.insert(tk.END, f"LIN {{X {tx}, Y {ty}, Z {to_point[2]}, A {A_angle:.1f}, B {tilt_angle_deg}, C {c}}}\n")
     else:
         # Arc ends exactly on to_point: write to_point itself (no rounding drift)
@@ -872,11 +1021,9 @@ def create_circ_transition(from_point, to_point, next_point, a, b, c, tilt_angle
     
     # Visualize the transition on canvas
     # Draw the intermediate point in a different color to distinguish transitions
+    draw_arc(from_point[0], from_point[1], intermediate_x, intermediate_y,
+             to_point[0], to_point[1], "CIRC", color="purple")
     draw_point(intermediate_x, intermediate_y, "purple")
-    
-    # Draw the transition lines
-    draw_line(from_point[0], from_point[1], intermediate_x, intermediate_y, "CIRC")
-    draw_line(intermediate_x, intermediate_y, to_point[0], to_point[1], "CIRC")
     
     # Calculate A angle based on the NEXT EDGE direction (from to_point to next_point)
     # This ensures the tool is oriented correctly for the upcoming straight edge
@@ -961,6 +1108,7 @@ def clear_for_auto():
     _push_undo_snapshot()
     current_a_angle = 180.0  # Reset A angle to default
     canvas.delete("all")
+    reset_view_zoom()
     output_text.delete("1.0", tk.END)
 
 def clear_all():
@@ -971,6 +1119,7 @@ def clear_all():
     motion_commands = []
     current_a_angle = 180.0  # Reset A angle to default
     canvas.delete("all")
+    reset_view_zoom()
     output_text.delete("1.0", tk.END)
 
 def change_center():
@@ -1663,6 +1812,8 @@ functions_menu.add_separator()
 functions_menu.add_command(label="Change Center\t (Ctrl+Shift+C)", command=change_center)
 functions_menu.add_separator()
 functions_menu.add_command(label="Auto‑Generate Base\t (Ctrl+Shift+G)", command=open_generate_popup)
+functions_menu.add_separator()
+functions_menu.add_command(label="Fit Canvas to Drawing\t (double-click canvas)", command=fit_view)
 
 functions_mbtn.configure(menu=functions_menu)
 functions_mbtn.grid(row=8, column=4, padx=10, pady=8, sticky="ew")
@@ -1780,6 +1931,10 @@ h_scrollbar.grid(row=4, column=4, sticky='ew')
 
 # Configure the canvas to use the scrollbars
 canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+# Canvas zoom: mouse wheel zooms around the pointer, double-click fits the whole drawing
+canvas.bind("<MouseWheel>", zoom_canvas)
+canvas.bind("<Double-Button-1>", fit_view)
 
 # Removed standalone Alternate Layer Direction checkbox (moved into Functions menu)
 
