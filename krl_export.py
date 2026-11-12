@@ -60,17 +60,20 @@ class ExportSettings:
     decimals: Optional[int] = None   # round coordinates/angles of the moves to n decimals (None = full)
 
 
-# NouvTete head (2026-11-04). TOOL value is ASSUMED (from the print variants), not yet
-# verified against NouvTete15.src / the controller. BASE Z 200 is an estimate.
+# NouvTete head. Measured on 2026-11-12: TOOL by the 4-point XYZ method on the roller contact point
+# (error 1.959 mm), BASE 1 by the 3-point method on the bed plate (origin = lower-left corner,
+# Z 0 = roller first contact). Keep this fallback equal to export_profiles.json, so a missing
+# profile file never writes the old estimates (base Z 200 / TCP X 10 Z 205).
 NOUVTETE = ExportSettings(
     profile="NouvTete",
     base_no=1,
-    base=(0.0, 0.0, 200.0, 0.0, 0.0, 0.0),
-    base_comment="Define base with Tool 3 - Optimized for comfortable robot positioning",
+    base=(390.204, -211.408, 295.221, 0.0, -0.559, -0.196),
+    base_comment="Define base 1 = bed plate (3-point with tool 3 on 2026-11-12: origin lower-left corner, X along the front edge; Z 0 = roller first contact). Old estimate was Z 200",
     tool_no=3,
-    tool=(10.0, 0.0, 205.0, 180.0, 0.0, 0.0),
+    tool=(-13.941, 3.247, 186.124, 180.0, 0.0, 0.0),
     tool_comments=[
-        "Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)",
+        "Define Tool 3: NouvTete head TCP = roller contact point, XYZ 4-point on 2026-11-12 (error 1.959 mm)",
+        "Previous assumed value: X 10, Y 0, Z 205, A 180 (about 24 mm ahead of the roller)",
         "Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0",
     ],
     decimals=3,      # 0.001 mm: far below the robot's resolution; also avoids '1e-07' style numbers

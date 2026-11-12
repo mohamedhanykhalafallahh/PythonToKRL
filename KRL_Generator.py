@@ -34,19 +34,22 @@ APP_TITLE = "KRL Generator"
 UNDO_LIMIT = 20
 
 # Shape-specific fields: (key, label, default)
+# Defaults (2026-11-12) are in the CALIBRATED bed base (BASE_DATA[1], origin = lower-left bed corner,
+# Z 0 = roller first contact): centre 145/221 = the old print spot (world 535/10); Start Z 5 hovers
+# 5 mm above the bed (lower it on purpose for a real print, pressed about -2.5); B -3 = head geometry.
 SHAPE_FIELDS = {
     "cuboid": [
-        ("xc", "Centre X (mm):", "535"),
-        ("yc", "Centre Y (mm):", "10"),
-        ("z0", "Start Z (mm):", "65"),
+        ("xc", "Centre X (mm):", "145"),
+        ("yc", "Centre Y (mm):", "221"),
+        ("z0", "Start Z (mm):", "5"),
         ("length", "Length X (mm):", "150"),
         ("width", "Width Y (mm):", "300"),
         ("corner_radius", "Corner Radius (mm, blank = auto):", ""),
     ],
     "cylinder": [
-        ("xc", "Centre X (mm):", "535"),
-        ("yc", "Centre Y (mm):", "10"),
-        ("z0", "Start Z (mm):", "65"),
+        ("xc", "Centre X (mm):", "145"),
+        ("yc", "Centre Y (mm):", "221"),
+        ("z0", "Start Z (mm):", "5"),
         ("inner_diameter", "Inner Diameter (mm):", "100"),
     ],
 }
@@ -60,7 +63,7 @@ COMMON_FIELDS = [
 ]
 ORIENT_FIELDS = [
     ("a", "A (deg):", "180"),
-    ("b", "B / Tilt (deg):", "0"),
+    ("b", "B / Tilt (deg):", "-3"),
     ("c", "C (deg):", "180"),
 ]
 

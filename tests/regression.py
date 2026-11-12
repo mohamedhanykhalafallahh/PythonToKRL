@@ -796,11 +796,22 @@ def check_old_projects(tmpdir):
         msgs.clear()
         p = os.path.join(FIXTURES, "app7_cylinder_project.json")
         saved = json.load(open(p))["output"]
-        if not app.open_project_from(p) or msgs or app.shape_var.get() != "cylinder" or \
+        # The fixture was saved with the OLD NouvTete TOOL/BASE (before the 2026-11-12 calibration),
+        # so exactly one profile-mismatch warning is expected, and the export may differ from
+        # App7's only in the profile lines (TOOL/BASE data and their comments).
+        opened = app.open_project_from(p)
+        profile_warning = (len(msgs) == 1 and msgs[0][0] == "warning"
+                           and "Different: base, base_comment, tool, tool_comments" in msgs[0][1])
+        if not opened or not profile_warning or app.shape_var.get() != "cylinder" or \
                 app.output_text.get("1.0", "end-1c") != app.round_text(saved):
             bad.append("old cylinder project: not opened identically (%s)" % msgs)
+
+        def no_profile_lines(text):
+            return [l for l in text.splitlines()
+                    if not l.startswith(("BASE_DATA", "TOOL_DATA", "; Define", "; Previous"))]
         app.export_to(os.path.join(tmpdir, "APP7_CYLINDER.src"))
-        if open(os.path.join(tmpdir, "APP7_CYLINDER.src")).read() != open(os.path.join(FIXTURES, "APP7_CYLINDER.src")).read():
+        if no_profile_lines(open(os.path.join(tmpdir, "APP7_CYLINDER.src")).read()) != \
+                no_profile_lines(open(os.path.join(FIXTURES, "APP7_CYLINDER.src")).read()):
             bad.append("old cylinder project: export differs from App7's export")
         app.generate()
         if app.output_text.get("1.0", "end-1c") != app.round_text(saved):

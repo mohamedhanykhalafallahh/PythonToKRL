@@ -4,25 +4,26 @@
     "NouvTete": {
       "base_no": 1,
       "base": [
+        390.204,
+        -211.408,
+        295.221,
         0.0,
-        0.0,
-        200.0,
-        0.0,
-        0.0,
-        0.0
+        -0.559,
+        -0.196
       ],
-      "base_comment": "Define base with Tool 3 - Optimized for comfortable robot positioning",
+      "base_comment": "Define base 1 = bed plate (3-point with tool 3 on 2026-11-12: origin lower-left corner, X along the front edge; Z 0 = roller first contact). Old estimate was Z 200",
       "tool_no": 3,
       "tool": [
-        10.0,
-        0.0,
-        205.0,
+        -13.941,
+        3.247,
+        186.124,
         180.0,
         0.0,
         0.0
       ],
       "tool_comments": [
-        "Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)",
+        "Define Tool 3: NouvTete head TCP = roller contact point, XYZ 4-point on 2026-11-12 (error 1.959 mm)",
+        "Previous assumed value: X 10, Y 0, Z 205, A 180 (about 24 mm ahead of the roller)",
         "Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0"
       ],
       "cdis": 5.0,

@@ -29,12 +29,13 @@ $H_POS=XHOME
 PTP  XHOME
 ;ENDFOLD
 ; Export profile: NouvTete
-; Define base with Tool 3 - Optimized for comfortable robot positioning
-BASE_DATA[1] = {X 0.0, Y 0.0, Z 200.0, A 0.0, B 0.0, C 0.0}
+; Define base 1 = bed plate (3-point with tool 3 on 2026-11-12: origin lower-left corner, X along the front edge; Z 0 = roller first contact). Old estimate was Z 200
+BASE_DATA[1] = {X 390.204, Y -211.408, Z 295.221, A 0.0, B -0.559, C -0.196}
 $BASE = BASE_DATA[1]
-; Define Tool 3: NouvTete head TCP (value from the print variants, NOT yet verified - check later)
+; Define Tool 3: NouvTete head TCP = roller contact point, XYZ 4-point on 2026-11-12 (error 1.959 mm)
+; Previous assumed value: X 10, Y 0, Z 205, A 180 (about 24 mm ahead of the roller)
 ; Old MHK head was: X -5.711, Y 128.569, Z 204.993, A 0.0, B 0.0, C 0.0
-TOOL_DATA[3] = {X 10.0, Y 0.0, Z 205.0, A 180.0, B 0.0, C 0.0}
+TOOL_DATA[3] = {X -13.941, Y 3.247, Z 186.124, A 180.0, B 0.0, C 0.0}
 $TOOL = TOOL_DATA[3]
 ; Set frame data for proper tool usage
 FDAT_ACT = {TOOL_NO 3, BASE_NO 1, IPO_FRAME #BASE}
