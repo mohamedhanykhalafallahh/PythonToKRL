@@ -564,9 +564,10 @@ p("The program writes a complete KUKA program: the standard header, the line **;
   "vers HOME, puis vos mouvements (avec C_DIS si l'option est active), et **END**.")
 code("; ===== LAYER 0 ===== (OUTWARD SPIRAL)\n"
      "; L0 T0 - START\n"
-     "PTP {X 197.5, Y 371.0, Z 5.0, A 180.0, B -3.0, C 180.0, S 2., T 43.}\n"
-     "CIRC {X 76.59, Y 364.41, Z 5.0},{X 70.0, Y 348.5, Z 5.0, A -90.0, B -3.0, C 180.0} C_DIS\n"
-     "LIN {X 70.0, Y 93.5, Z 5.0, A -90.0, B -3.0, C 180.0} C_DIS")
+     "PTP {X 202.5, Y 375.0, Z 10.0, A 180.0, B -3.0, C 180.0, S 2., T 43.}\n"
+     "LIN {X 97.5, Y 375.0, Z 10.0, A 180.0, B -3.0, C 180.0} C_DIS\n"
+     "CIRC {X 81.59, Y 368.41, Z 10.0},{X 75.0, Y 352.5, Z 10.0, A -90.0, B -3.0, C 180.0} C_DIS\n"
+     "LIN {X 75.0, Y 97.5, Z 10.0, A -90.0, B -3.0, C 180.0} C_DIS")
 h2("On the robot", "Sur le robot")
 steps(("Plug the USB stick into the controller (or the smartPAD) and copy the .src file into your program "
        "folder with the file manager (expert user level may be needed).",
@@ -832,11 +833,11 @@ table([5.6, 10.9], [("Problem", "Problème"), ("What to do", "Que faire")],
 h1("Appendix: default values and glossary", "Annexe : valeurs par défaut et glossaire")
 h2("Default values", "Valeurs par défaut")
 table([6.0, 4.0, 6.5], [("Field", "Champ"), ("Default", "Défaut"), ("Note", "Remarque")],
-      [("Centre X / Centre Y", "Centre X / Centre Y"), ("145 / 221 mm", "145 / 221 mm"),
+      [("Centre X / Centre Y", "Centre X / Centre Y"), ("150 / 225 mm", "150 / 225 mm"),
        ("From the bed's lower-left corner (BASE 1)", "Depuis le coin avant gauche du plateau (BASE 1)")],
-      [("Start Z", "Start Z"), ("5 mm", "5 mm"),
-       ("Z 0 = the bed; 5 mm hovers above it. Lower it on purpose for a real print",
-        "Z 0 = le plateau ; 5 mm reste au-dessus. À abaisser volontairement pour imprimer")],
+      [("Start Z", "Start Z"), ("10 mm", "10 mm"),
+       ("Z 0 = the bed; 10 mm hovers above it. Lower it on purpose for a real print",
+        "Z 0 = le plateau ; 10 mm reste au-dessus. À abaisser volontairement pour imprimer")],
       [("Length X × Width Y (cuboid)", "Length X × Width Y (pavé)"), ("150 × 300 mm", "150 × 300 mm"),
        ("Corner radius blank = 22.5 mm", "Corner radius vide = 22,5 mm")],
       [("Inner diameter (cylinder)", "Inner diameter (cylindre)"), ("100 mm", "100 mm"), ("", "")],
