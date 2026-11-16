@@ -8,7 +8,7 @@ Left-drag rotates, right/middle-drag moves, wheel zooms, double-click resets.
 """
 import math
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 import path_model as pm
 import ui_images
@@ -44,23 +44,33 @@ class View3D:
         self.win.geometry("780x620")
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
+        # the same look as the main window when its styles exist (ui_theme.apply was called)
+        styled = bool(getattr(parent._root(), "_palette", None))
         bar = tk.Frame(self.win)
-        bar.pack(side=tk.TOP, fill=tk.X, padx=6, pady=4)
+        bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=6)
         tk.Label(bar, text="Z exaggeration:").pack(side=tk.LEFT)
         self.zex_var = tk.IntVar(value=1)
         tk.Scale(bar, from_=1, to=40, orient=tk.HORIZONTAL, length=160, variable=self.zex_var,
                  showvalue=True, command=lambda _v: self.redraw()).pack(side=tk.LEFT, padx=(0, 10))
         self.by_layer_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(bar, text="Colour by layer", variable=self.by_layer_var,
-                       command=self.redraw).pack(side=tk.LEFT, padx=(0, 10))
+        def check(text, var):
+            if styled:
+                return ttk.Checkbutton(bar, text=" " + text, variable=var, command=self.redraw,
+                                       style="Check.TCheckbutton", cursor="hand2")
+            return tk.Checkbutton(bar, text=text, variable=var, command=self.redraw)
+
+        def button(text, command, width=5):
+            if styled:
+                return ttk.Button(bar, text=text, command=command, style="Small.Rounded.TButton", cursor="hand2",
+                                  width=width)
+            return tk.Button(bar, text=text, width=width, command=command)
+        check("Colour by layer", self.by_layer_var).pack(side=tk.LEFT, padx=(0, 10))
         self.arrows_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Head direction (A)", variable=self.arrows_var,
-                       command=self.redraw).pack(side=tk.LEFT, padx=(0, 10))
+        check("Head direction (A)", self.arrows_var).pack(side=tk.LEFT, padx=(0, 10))
         for txt, yaw, pitch in (("Iso", self.DEFAULT_YAW, self.DEFAULT_PITCH), ("Top", 0.0, math.radians(90)),
                                 ("Front", 0.0, 0.0), ("Side", math.radians(-90), 0.0)):
-            tk.Button(bar, text=txt, width=5,
-                      command=lambda y=yaw, p=pitch: self.set_view(y, p)).pack(side=tk.LEFT, padx=1)
-        tk.Button(bar, text="Reload", command=self.reload).pack(side=tk.RIGHT)
+            button(txt, lambda y=yaw, p=pitch: self.set_view(y, p)).pack(side=tk.LEFT, padx=2)
+        button("Reload", self.reload, width=7).pack(side=tk.RIGHT)
 
         self.canvas = tk.Canvas(self.win, bg="white", highlightthickness=0)
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)

@@ -195,7 +195,9 @@ def add_c_dis(krl_code):
     Not approximated:
       - PTP lines (the start must be reached exactly before printing begins),
       - the very last motion of the program (the print ends exactly on its last point),
-      - lines that already carry an approximation (so re-exporting is safe)."""
+      - lines that already carry an approximation (so re-exporting is safe),
+      - lines with the comment '; exact stop' (the touch-down and the end of the print, when the
+        approach / retract moves are added)."""
     lines = krl_code.split("\n")
     motion_idx = [i for i, ln in enumerate(lines) if _MOTION_RE.match(ln)]
     if not motion_idx:
@@ -207,7 +209,7 @@ def add_c_dis(krl_code):
             continue
         # Keep any trailing ';' comment after the approximation keyword
         code, sep, comment = ln.partition(";")
-        if _APPROX_RE.search(code):
+        if _APPROX_RE.search(code) or "exact stop" in comment.lower():
             continue
         lines[i] = code.rstrip() + " C_DIS" + ((" " + sep + comment) if sep else "")
     return "\n".join(lines)

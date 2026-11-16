@@ -242,7 +242,7 @@ _N_MOVES_RE = re.compile(r"\((\d+)\s+moves?\)")
 
 def path_3d(items):
     """Items -> (start_point, moves) with moves as
-    {'kind': 'LIN'/'CIRC', 'pts': [(x,y,z), ...], 'layer': n, 'transition': bool}.
+    {'kind': 'LIN'/'CIRC', 'pts': [(x,y,z), ...], 'layer': n, 'transition': bool, 'line': index of the item}.
 
     Layers come from '; ===== LAYER n' comments. Moves after a comment containing
     'TRANSITION' are transition moves up to and including the first CIRC, or exactly the
@@ -250,7 +250,7 @@ def path_3d(items):
     moves, pos, start = [], None, None
     layer, in_transition = 0, False
     n_left = None                                   # moves left in a '(n moves)' transition
-    for item in items:
+    for idx, item in enumerate(items):
         if isinstance(item, Raw) and item.text.strip() != item.text:
             item = parse_line(item.text.strip())     # hand-indented line: still show it
         if isinstance(item, (Comment, Raw)):
@@ -271,12 +271,13 @@ def path_3d(items):
             continue
         if isinstance(item, Lin) and pos is not None:
             p = item.target.xyz
-            moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition})
+            moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition,
+                          'line': idx})
             pos = p
         elif isinstance(item, Circ) and pos is not None:
             p2 = item.target.xyz
             moves.append({'kind': 'CIRC', 'pts': arc_points_3d(pos, item.via.xyz, p2), 'layer': layer,
-                          'transition': in_transition})
+                          'transition': in_transition, 'line': idx})
             pos = p2
             if n_left is None:
                 in_transition = False   # a transition ends with (at most) one CIRC ...
@@ -418,6 +419,33 @@ def heading_checks(items):
         pos = end
         k += 1
     return out
+
+
+EXACT_STOP = " exact stop"     # trailing comment of a move that must NOT be blended (krl_export.add_c_dis)
+
+
+def add_approach_retract(items, lift):
+    """The same program, but the robot first goes to a point `lift` mm ABOVE the start (PTP),
+    comes straight down (LIN, exact stop), and after the last move goes straight up again.
+    Without it the PTP from HOME ends directly on the bed and the program ends with the head
+    resting on the part. Returns a new list (nothing is added if there is no PTP + move)."""
+    first = next((k for k, i in enumerate(items) if isinstance(i, Ptp)), None)
+    last = next((k for k in range(len(items) - 1, -1, -1) if isinstance(items[k], (Lin, Circ))), None)
+    if first is None or last is None or last < first:
+        return list(items)
+    s = items[first].target
+    above = Pose(s.x, s.y, s.z + lift, s.a, s.b, s.c, s.s, s.t)
+    down = Lin(Pose(s.x, s.y, s.z, s.a, s.b, s.c), None, EXACT_STOP)
+    end_item = items[last]
+    e = end_item.target
+    if isinstance(end_item, Lin):
+        end_item = Lin(e, end_item.approx, end_item.note or EXACT_STOP)
+    else:
+        end_item = Circ(end_item.via, e, end_item.approx, end_item.note or EXACT_STOP)
+    up = Lin(Pose(e.x, e.y, e.z + lift, e.a, e.b, e.c))
+    return (list(items[:first]) + [Comment("APPROACH: %s mm above the start, then straight down" % fmt(lift, 3)),
+                                   Ptp(above, items[first].approx, items[first].note), down]
+            + list(items[first + 1:last]) + [end_item, Comment("RETRACT: straight up"), up] + list(items[last + 1:]))
 
 
 def path_length(moves):

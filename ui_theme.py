@@ -197,7 +197,9 @@ def _elements(root, name, P):
     e["icons"] = {"cuboid_on": img(ui.icon_cuboid(20, P["accent_text"])),
                   "cuboid_off": img(ui.icon_cuboid(20, P["icon_off"])),
                   "cylinder_on": img(ui.icon_cylinder(20, P["accent_text"])),
-                  "cylinder_off": img(ui.icon_cylinder(20, P["icon_off"]))}
+                  "cylinder_off": img(ui.icon_cylinder(20, P["icon_off"])),
+                  "import_on": img(ui.icon_import(20, P["accent_text"])),
+                  "import_off": img(ui.icon_import(20, P["icon_off"]))}
     done[name] = e
     return e
 

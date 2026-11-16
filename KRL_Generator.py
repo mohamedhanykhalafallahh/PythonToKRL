@@ -1,8 +1,13 @@
-"""KRL Generator: the all-in-one app (cuboid and cylinder prints for the KUKA KR 6 R900 sixx).
+"""KRL Generator: the all-in-one app (cuboid, cylinder and imported free-form prints for the
+KUKA KR 6 R900 sixx).
 
-Pick a shape, enter its sizes and the path settings, Generate, check it in the top view and
-the 3D view, and export the .src. Everything is built on the shared modules:
+Pick a shape (or import a design file), enter its sizes and the path settings, Generate, check
+it in the top view and the 3D view, and export the .src or send it to the robot's transfer
+folder. Everything is built on the shared modules:
     cuboid.py / cylinder.py   the path generators (no GUI)
+    freeform.py               the generator for imported outlines (import_formats.py reads
+                              SVG / DXF / STL, contours.py does the 2D geometry)
+    robot_link.py             sending the program to the robot's transfer folder
     path_model.py             KRL lines (write / read), 3D geometry, kink and A checks
     krl_export.py             .src header + export profiles (export_profiles.json)
     project_files.py          project files (.json)
@@ -22,9 +27,12 @@ from tkinter import filedialog, messagebox, ttk
 import cuboid
 import cylinder
 import export_settings_dialog
+import freeform
+import import_formats
 import krl_export
 import path_model as pm
 import project_files
+import robot_link
 import shapes
 import ui_images
 import ui_theme
@@ -52,8 +60,126 @@ SHAPE_FIELDS = {
         ("z0", "Start Z (mm):", "10"),
         ("inner_diameter", "Inner Diameter (mm):", "100"),
     ],
+    # an imported design file: its outline is the first turn (see freeform.py)
+    "import": [
+        ("file", "Design file:", ""),
+        ("xc", "Centre X (mm):", "150"),
+        ("yc", "Centre Y (mm):", "225"),
+        ("z0", "Start Z (mm):", "10"),
+        ("scale", "Scale:", "1"),
+        ("rotation", "Rotation (deg):", "0"),
+        ("corner_radius", "Corner Radius (mm, blank = keep corners):", ""),
+        ("outline", "Outline number:", "1"),
+        ("smoothing", "Smoothing (mm, blank = auto):", ""),
+    ],
 }
-SHAPE_NAMES = {"cuboid": "Cuboid (rounded rectangle)", "cylinder": "Cylinder (tube)"}
+IMPORT_BLANK_OK = ("corner_radius", "smoothing")       # import fields that may stay empty
+FIELD_NAMES = {"step": "Turn step E", "layer_height": "Layer height", "turns": "Turns per layer", "layers": "Layers",
+               "a": "A", "b": "B / Tilt", "c": "C", "xc": "Centre X", "yc": "Centre Y", "z0": "Start Z",
+               "length": "Length X", "width": "Width Y", "corner_radius": "Corner radius",
+               "inner_diameter": "Inner diameter", "scale": "Scale", "rotation": "Rotation",
+               "outline": "Outline no.", "smoothing": "Smoothing", "lift": "Approach height"}
+
+# The bed plate in the calibrated base (BASE_DATA[1]: origin = lower-left corner, Z 0 = first contact)
+BED_X, BED_Y = 300.0, 455.0
+Z_LOW_WARN = -5.0            # mm: a path lower than this is reported (a pressed first layer is about -2.5)
+MIN_RADIUS_WARN = 20.0       # mm: smallest arc the head is known to follow well
+CORNER_WARN = 5.0            # deg: a corner sharper than this is reported
+A_DEV_WARN = 20.0            # deg: head direction this far off the travel direction is reported
+DEFAULT_LIFT = "30"          # mm: approach / retract height above the start and the end
+
+
+class _BadField(ValueError):
+    pass
+
+
+def to_number(text, name):
+    """Field text -> float. A decimal comma is accepted ('2,5')."""
+    try:
+        return float(str(text).strip().replace(",", "."))
+    except ValueError:
+        raise _BadField(name)
+
+
+def path_warnings(items):
+    """Things to look at before printing, as a list of sentences (empty = nothing found):
+    path outside the bed, far below the bed, tight arcs, sharp corners, head not along the travel."""
+    out = []
+    start, moves = pm.path_3d(items)
+    if not moves:
+        return out
+    pts = [q for m in moves for q in m['pts']]
+    xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
+    if min(xs) < 0 or max(xs) > BED_X or min(ys) < 0 or max(ys) > BED_Y:
+        out.append("The path leaves the bed (%g x %g mm): X %.0f to %.0f, Y %.0f to %.0f."
+                   % (BED_X, BED_Y, min(xs), max(xs), min(ys), max(ys)))
+    if min(zs) < Z_LOW_WARN:
+        out.append("The path goes down to Z %.1f mm, more than %g mm below the bed surface." % (min(zs), -Z_LOW_WARN))
+    radii, corners, pos, prev = [], [], None, None
+    for item in items:
+        if isinstance(item, pm.Ptp):
+            pos, prev = item.target.xyz, None
+            continue
+        if not isinstance(item, (pm.Lin, pm.Circ)) or pos is None:
+            continue
+        if isinstance(item, pm.Circ):
+            fr = pm._arc_frame(pos, item.via.xyz, item.target.xyz)
+            if fr is not None:
+                radii.append(fr[1])
+        t = pm.move_tangents(pos, item)
+        flat = lambda v: v is not None and math.hypot(v[0], v[1]) > 0.5      # not a (nearly) vertical move
+        if t and prev is not None and flat(t[0]) and flat(prev):
+            corners.append(abs(pm.angle_diff(math.degrees(math.atan2(prev[1], prev[0])),
+                                             math.degrees(math.atan2(t[0][1], t[0][0])))))
+        prev = t[1] if t else None
+        pos = item.target.xyz
+    if radii and min(radii) < MIN_RADIUS_WARN:
+        out.append("Smallest arc radius is %.1f mm (below %g mm): the head may not follow it well."
+                   % (min(radii), MIN_RADIUS_WARN))
+    sharp = [c for c in corners if c > CORNER_WARN]
+    if sharp:
+        out.append("%d sharp corner%s (up to %.0f deg): the head has to turn on the spot there."
+                   % (len(sharp), "" if len(sharp) == 1 else "s", max(sharp)))
+    hc = pm.heading_checks(items)
+    if hc and max(h['dev'] for h in hc) > A_DEV_WARN:
+        out.append("The head direction A is up to %.0f deg off the travel direction."
+                   % max(h['dev'] for h in hc))
+    return out
+
+
+ROBOT_GUIDE = (
+    "WHAT IT DOES\n"
+    "Send to Robot saves the program file (.src) into ONE folder that the robot's computer can\n"
+    "also open over the network cable. That replaces carrying the USB stick, nothing more.\n"
+    "On the smartPAD you then copy the file from that folder into R1\\Program, exactly as you\n"
+    "do today from the USB stick, and select and start it as usual.\n\n"
+    "IT HAS NOT BEEN TRIED ON THE ROBOT YET. The PC side is tested; the steps below need the lab.\n\n"
+    "TRY IT FIRST WITHOUT THE ROBOT\n"
+    "Choose any folder on this PC as the transfer folder, press Test connection, then Send.\n"
+    "The .src appears in that folder. That is all the PC side does.\n\n"
+    "SET UP WITH THE ROBOT (once, with the person responsible for the cell)\n"
+    "1. Connect this PC and the controller with a network cable (controller socket KLI / X66).\n"
+    "2. On the smartPAD: Start-up > Network configuration. Note the controller's IP address.\n"
+    "   Give this PC a fixed address in the same range (same first three numbers).\n"
+    "3. Make one shared folder. Either\n"
+    "   a) on this PC: right-click a folder > Properties > Sharing > share it. On the controller\n"
+    "      (Expert login, Windows level) connect it as a network drive. Transfer folder here =\n"
+    "      that folder on this PC.  -- or --\n"
+    "   b) on the controller: share a folder such as D:\\Transfer. Transfer folder here =\n"
+    "      \\\\<controller IP>\\Transfer\n"
+    "4. Press Test connection here. A tick means this PC can write into the folder.\n"
+    "5. Send a program. On the smartPAD open the Navigator, go to the shared folder, copy the\n"
+    "   file and paste it into R1\\Program.\n\n"
+    "IF IT DOES NOT WORK\n"
+    "- 'does not answer': cable, IP addresses, or the controller blocks file sharing on KLI.\n"
+    "- 'folder was not found': open the same path in the Windows Explorer first; Windows may ask\n"
+    "  for the user name and password of the other computer.\n"
+    "- The USB stick keeps working as before: Export KRL is unchanged.\n"
+    "- Do not use R1\\Program itself as the transfer folder before it is checked in the lab.")
+
+SHAPE_NAMES = {"cuboid": "Cuboid (rounded rectangle)", "cylinder": "Cylinder (tube)",
+               "import": "Import (design file)"}
+GENERATORS = {"cuboid": cuboid, "cylinder": cylinder, "import": freeform}
 # Path and orientation fields shared by all shapes
 COMMON_FIELDS = [
     ("step", "Turn Step E (mm):", "2"),
@@ -86,7 +212,16 @@ HELP_GENERAL = (
     "- Save Project keeps every input and the output, to repeat a print exactly.\n"
     "  Open Project also opens projects of the old cuboid / cylinder apps (a cuboid with a\n"
     "  hand-made base is offered to the manual editor).\n"
-    "- A base built point by point: Tools > Manual 11-point editor (advanced)."
+    "- A base built point by point: Tools > Manual 11-point editor (advanced).\n"
+    "- Any other shape: draw it in a CAD or drawing program and use Import (SVG, DXF or STL).\n"
+    "- Approach from above: the robot first goes above the start, comes straight down, and\n"
+    "  lifts straight up at the end (those two points are exact stops, not blended).\n"
+    "- The top view shows the bed plate (dashed). The 'checks' chip lists what to look at\n"
+    "  before printing (off the bed, tight arcs, sharp corners). Click it for the list.\n"
+    "- Click a move in the top view to find its line in the program, or click a line to see\n"
+    "  its move. Numbers may be typed with a decimal comma.\n"
+    "- File > Send to Robot writes the program into the robot's transfer folder over the\n"
+    "  network (Tools > Robot Connection), instead of carrying a USB stick."
 )
 HELP_SHAPES = {
     "cuboid": (
@@ -108,12 +243,32 @@ HELP_SHAPES = {
         "- Even layers go outward, odd layers inward.\n"
         "- Helix (1 turn only): the climb is spread over the whole loop, no seam.\n"
         "- Auto-Orient: A follows the travel direction; off: A/B/C as typed."),
+    "import": (
+        "Import (design file)\n\n"
+        "- SVG or DXF: a 2D drawing. Its closed outline is the FIRST turn, used for every layer.\n"
+        "  Several outlines in one file: Outline number picks one (1 = the largest).\n"
+        "- STL: a 3D model. It is cut at every layer height, so each layer follows the model\n"
+        "  (the number of layers is limited by the model's height).\n"
+        "- STEP files cannot be read: export STL (3D) or DXF (2D) from the CAD program.\n"
+        "- Centre X/Y: where the middle of the shape goes on the bed. Scale and Rotation resize\n"
+        "  and turn it. Start Z: height of the first layer.\n"
+        "- Corner radius: sharp corners are replaced by arcs of this radius (the head cannot\n"
+        "  turn on the spot). Blank = keep the corners as drawn.\n"
+        "- Every next turn is the outline moved by E: outward, or inward if 'Turns grow inward'\n"
+        "  is ticked (then the drawing is the OUTSIDE of the part).\n"
+        "- The fiber is never cut: near the end of each loop the path slides over to the next\n"
+        "  loop or climbs to the next layer (purple).\n"
+        "- Smoothing: how closely the LIN / CIRC moves follow the drawing (blank = 0.01 mm for\n"
+        "  drawings, 0.05 mm for STL). A larger value gives fewer, longer moves.\n"
+        "- The print needs ONE closed outline without crossings; open lines are not used."),
 }
 HELP_KEYS = (
     "Ctrl+G  Generate\n"
     "Ctrl+E  Export KRL Code\n"
+    "Ctrl+I  Import a design file (SVG, DXF, STL)\n"
+    "Ctrl+Shift+R  Send to Robot\n"
     "Ctrl+Shift+D  3D View\n"
-    "Ctrl+Shift+O / Ctrl+Shift+S  Open / Save Project\n"
+    "Ctrl+Shift+O  Open Project      Ctrl+S  Save      Ctrl+Shift+S  Save As\n"
     "Ctrl+Z / Ctrl+Y  Undo / Redo (inside the text box: undo / redo your typing)\n\n"
     "Top view: mouse wheel = zoom, drag = move, double-click = fit."
 )
@@ -187,6 +342,14 @@ class MainApp:
         self.auto_orient_var = tk.BooleanVar(value=True)
         self.helix_var = tk.BooleanVar(value=False)
         self.c_dis_var = tk.BooleanVar(value=True)
+        self.inward_var = tk.BooleanVar(value=False)     # import: turns grow inward
+        self.approach_var = tk.BooleanVar(value=True)    # approach from above + lift at the end
+        self.lift_var = tk.StringVar(value=DEFAULT_LIFT)
+        self.project_path = None                         # the project file of File > Save
+        self.warnings = []                               # path_warnings of the current text
+        self._sel_line = None                            # item index of the move picked in the top view
+        self._stale = False                              # inputs changed since the last Generate
+        self._design = None                              # (path, modified time, Design) last read
         self.undo_stack, self.redo_stack = [], []
         self.view = None                 # top view transform (s, tx, ty); None = fit on next draw
         self.theme = ui_theme.load_theme()
@@ -198,17 +361,24 @@ class MainApp:
         self._show_shape_fields()
         self._bind_keys()
         self.apply_theme(self.theme, save=False)
+        self._saved_state = self.state()                 # to know if there is unsaved work
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # ================================================================== UI
     def _build_menu(self):
         m = tk.Menu(self.root)
         f = tk.Menu(m, tearoff=False)
         f.add_command(label="Open Project...", accelerator="Ctrl+Shift+O", command=self.open_project)
-        f.add_command(label="Save Project...", accelerator="Ctrl+Shift+S", command=self.save_project)
+        f.add_command(label="Save Project", accelerator="Ctrl+S", command=self.save)
+        f.add_command(label="Save Project As...", accelerator="Ctrl+Shift+S", command=self.save_project)
+        f.add_separator()
+        f.add_command(label="Import Design File (SVG / DXF / STL)...", accelerator="Ctrl+I",
+                      command=self.choose_design_file)
         f.add_separator()
         f.add_command(label="Export KRL Code (.src / .txt)...", accelerator="Ctrl+E", command=self.export)
+        f.add_command(label="Send to Robot...", accelerator="Ctrl+Shift+R", command=self.send_to_robot)
         f.add_separator()
-        f.add_command(label="Exit", command=self.root.destroy)
+        f.add_command(label="Exit", command=self.on_close)
         m.add_cascade(label="File", menu=f)
         e = tk.Menu(m, tearoff=False)
         e.add_command(label="Undo", accelerator="Ctrl+Z", command=self.undo)
@@ -224,9 +394,9 @@ class MainApp:
         t.add_command(label="Fit Top View", command=self.fit_view)
         t.add_separator()
         t.add_command(label="Export Settings (TOOL/BASE profiles)...", command=self.open_export_settings)
+        t.add_command(label="Robot Connection (transfer folder)...", command=self.open_robot_connection)
         t.add_separator()
         t.add_command(label="Manual 11-point editor (advanced)...", command=self.open_manual_editor)
-        t.add_command(label="Free-form editor (experimental)...", command=self.open_free_form_editor)
         m.add_cascade(label="Tools", menu=t)
         th = tk.Menu(m, tearoff=False)
         for name, label in (("light", "Light"), ("dark", "Dark")):
@@ -238,6 +408,7 @@ class MainApp:
         h.add_command(label="Current shape", command=lambda: messagebox.showinfo(
             SHAPE_NAMES[self.shape_var.get()], HELP_SHAPES[self.shape_var.get()]))
         h.add_command(label="Keyboard and mouse", command=lambda: messagebox.showinfo("Keyboard and mouse", HELP_KEYS))
+        h.add_command(label="Sending to the robot (network)", command=self.show_robot_guide)
         m.add_cascade(label="Help", menu=h)
         self.root.config(menu=m)
 
@@ -287,7 +458,8 @@ class MainApp:
         seg = ttk.Frame(card, style="In.TFrame")
         seg.grid(row=1, column=0, columnspan=4, sticky="w")
         self.seg_buttons = {}
-        for i, (shape, text) in enumerate((("cuboid", " Cuboid"), ("cylinder", " Cylinder"))):
+        for i, (shape, text) in enumerate((("cuboid", " Cuboid"), ("cylinder", " Cylinder"),
+                                           ("import", " Import"))):
             b = ttk.Button(seg, text=text, compound="left", cursor="hand2",
                            command=lambda s_=shape: self.set_shape(s_))
             b.pack(side=tk.LEFT, padx=(0 if i == 0 else 6, 0))
@@ -316,13 +488,23 @@ class MainApp:
         self.helix_check = ttk.Checkbutton(card, text=" Helix (single-wall tube, 1 turn only)",
                                            variable=self.helix_var, style="Check.TCheckbutton", cursor="hand2")
         self.helix_check.grid(row=4, column=0, columnspan=4, sticky="w")
+        self.inward_check = ttk.Checkbutton(card, text=" Turns grow inward (drawing = outside of the part)",
+                                            variable=self.inward_var, style="Check.TCheckbutton", cursor="hand2")
+        self.inward_check.grid(row=5, column=0, columnspan=4, sticky="w")
+        ap = ttk.Frame(card, style="In.TFrame")
+        ap.grid(row=6, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(ap, text=" Approach from above and lift at the end,", variable=self.approach_var,
+                        style="Check.TCheckbutton", cursor="hand2").pack(side=tk.LEFT)
+        ttk.Entry(ap, textvariable=self.lift_var, width=4, style="Field.TEntry").pack(side=tk.LEFT, padx=(5, 4))
+        ttk.Label(ap, text="mm").pack(side=tk.LEFT)
         # ---- actions
-        ttk.Button(left, text="Generate", style="Primary.TButton", cursor="hand2",
-                   command=self.generate).pack(fill=tk.X, pady=(2, 0))
+        self.generate_btn = ttk.Button(left, text="Generate", style="Primary.TButton", cursor="hand2",
+                                       command=self.generate)
+        self.generate_btn.pack(fill=tk.X, pady=(2, 0))
         row = ttk.Frame(left, style="Bg.TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
         for i, (text, cmd) in enumerate((("3D View", self.open_3d_view), ("Export KRL\u2026", self.export),
-                                         ("Clear", self.clear))):
+                                         ("Send to Robot\u2026", self.send_to_robot), ("Clear", self.clear))):
             ttk.Button(row, text=text, style="BgRounded.TButton", cursor="hand2", command=cmd).pack(
                 side=tk.LEFT, expand=True, fill=tk.X, padx=(0 if i == 0 else 6, 0))
 
@@ -332,7 +514,7 @@ class MainApp:
         head = ttk.Frame(tv, style="In.TFrame")
         head.pack(fill=tk.X)
         ttk.Label(head, text="Top view", style="Title.TLabel").pack(side=tk.LEFT)
-        ttk.Label(head, text="wheel: zoom  \u00b7  drag: move  \u00b7  double-click: fit",
+        ttk.Label(head, text="wheel: zoom  \u00b7  drag: move  \u00b7  click: find the line  \u00b7  double-click: fit",
                   style="Muted.TLabel").pack(side=tk.RIGHT)
         self.canvas = tk.Canvas(tv, width=600, height=330, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
@@ -340,6 +522,7 @@ class MainApp:
         c.bind("<MouseWheel>", self._wheel)
         c.bind("<ButtonPress-1>", self._press)
         c.bind("<B1-Motion>", self._drag)
+        c.bind("<ButtonRelease-1>", self._release)
         c.bind("<Double-Button-1>", lambda e: self.fit_view())
         c.bind("<Configure>", lambda e: self.redraw())
         self.legend = ttk.Frame(tv, style="In.TFrame")
@@ -372,6 +555,7 @@ class MainApp:
         txt_frame.grid_rowconfigure(0, weight=1)
         txt_frame.grid_columnconfigure(0, weight=1)
         self.output_text.bind("<KeyRelease>", lambda e: self._schedule_highlight())
+        self.output_text.bind("<ButtonRelease-1>", self._text_clicked, add="+")
 
     def _show_shape_fields(self):
         f = self.shape_frame
@@ -384,19 +568,36 @@ class MainApp:
             self.shape_title.config(text="Size  \u00b7  first (inner) turn, mm")
             rows = ((("xc", "Centre X"), ("yc", "Centre Y")), (("length", "Length X"), ("width", "Width Y")),
                     (("z0", "Start Z"), ("corner_radius", "Corner radius")))
-        else:
+        elif shape == "cylinder":
             self.shape_title.config(text="Size  \u00b7  first (inner) ring, mm")
             rows = ((("xc", "Centre X"), ("yc", "Centre Y")), (("z0", "Start Z"), ("inner_diameter", "Inner diameter")))
-        for r, row in enumerate(rows, 1):
-            for c, (k, label) in enumerate(row):
-                self._field(f, r, c, fs[k], label)
-        self.shape_hint = ttk.Label(f, text="", style="Muted.TLabel")
-        self.shape_hint.grid(row=len(rows) + 1, column=0, columnspan=4, sticky="w", pady=(2, 0))
-        self._update_shape_hint()
-        if shape == "cylinder":
-            self.helix_check.grid()
         else:
-            self.helix_check.grid_remove()
+            self.shape_title.config(text="Design file  \u00b7  its outline is the first turn (mm, deg)")
+            rows = ((("xc", "Centre X"), ("yc", "Centre Y"), ("z0", "Start Z")),
+                    (("scale", "Scale"), ("rotation", "Rotation"), ("corner_radius", "Corner rad.")),
+                    (("outline", "Outline no."), ("smoothing", "Smoothing")))
+        if shape == "import":           # file row: button + file name and what was found in it (2 lines)
+            bar = ttk.Frame(f, style="In.TFrame")
+            bar.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(0, 3))
+            ttk.Button(bar, text="Choose file\u2026", style="Rounded.TButton", cursor="hand2",
+                       command=self.choose_design_file).pack(side=tk.LEFT)
+            self.shape_hint = ttk.Label(bar, text="", style="Muted.TLabel", justify=tk.LEFT)
+            self.shape_hint.pack(side=tk.LEFT, padx=(8, 0))
+            for r, row in enumerate(rows, 2):
+                for c, (k, label) in enumerate(row):
+                    self._field(f, r, c, fs[k], label, width=6, label_width=10)
+        else:
+            for r, row in enumerate(rows, 1):
+                for c, (k, label) in enumerate(row):
+                    self._field(f, r, c, fs[k], label)
+            self.shape_hint = ttk.Label(f, text="", style="Muted.TLabel")
+            self.shape_hint.grid(row=len(rows) + 1, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        self._update_shape_hint()
+        for check, wanted in ((self.helix_check, "cylinder"), (self.inward_check, "import")):
+            if shape == wanted:
+                check.grid()
+            else:
+                check.grid_remove()
         self._update_seg_buttons()
 
     def _update_shape_hint(self, *_):
@@ -410,8 +611,19 @@ class MainApp:
                 hint.config(text="corner radius blank = automatic (%g mm here)" % round(r, 2))
             except ValueError:
                 hint.config(text="corner radius blank = automatic (15 % of the shorter side)")
-        else:
+        elif self.shape_var.get() == "cylinder":
             hint.config(text="inner diameter of the first ring; wall = turns \u00d7 E")
+        else:
+            path = self.shape_vars["import"]["file"].get().strip()
+            name = os.path.basename(path)
+            name = name if len(name) <= 44 else name[:41] + "\u2026"
+            d = self._design[2] if self._design and self._design[0] == path else None
+            if d is not None:
+                hint.config(text="%s\n%s" % (name, d.describe()))
+            elif path:
+                hint.config(text="%s\nnot read yet (press Generate)" % name)
+            else:
+                hint.config(text="SVG or DXF drawing, or STL model\nblank corner radius = keep the corners")
 
     def _update_seg_buttons(self):
         icons = getattr(self.root, "_icons", None)
@@ -440,6 +652,7 @@ class MainApp:
                                    selectbackground=P["select_bg"], selectforeground=P["text"],
                                    highlightbackground=P["border"], highlightcolor=P["accent"])
         self.output_text.tag_configure("cmt", foreground=P["cmt"])
+        self.output_text.tag_configure("picked", background=P["select_bg"])
         self.output_text.tag_configure("kw", foreground=P["kw"], font=(ui_theme.CODE_FONT, ui_theme.CODE_SIZE, "bold"))
         self._update_seg_buttons()
         ui_theme.title_bar(self.root, name == "dark")
@@ -485,13 +698,31 @@ class MainApp:
         r = self.root
         r.bind_all("<Control-g>", lambda e: self.generate())
         r.bind_all("<Control-e>", lambda e: self.export())
+        r.bind_all("<Control-i>", lambda e: None if e.widget is self.output_text else self.choose_design_file())
+        r.bind_all("<Control-Shift-R>", lambda e: self.send_to_robot())
         r.bind_all("<Control-Shift-D>", lambda e: self.open_3d_view())
         r.bind_all("<Control-Shift-O>", lambda e: self.open_project())
         r.bind_all("<Control-Shift-S>", lambda e: self.save_project())
+        r.bind_all("<Control-s>", lambda e: self.save())
         r.bind_all("<Control-z>", lambda e: None if e.widget is self.output_text else self.undo())
         r.bind_all("<Control-y>", lambda e: None if e.widget is self.output_text else self.redo())
         for k in ("length", "width"):
             self.shape_vars["cuboid"][k].trace_add("write", self._update_shape_hint)
+        # any input changed after Generate: say so on the Generate button
+        every = list(self.vars.values()) + [v for fs in self.shape_vars.values() for v in fs.values()] + \
+            [self.auto_orient_var, self.helix_var, self.inward_var, self.approach_var, self.lift_var, self.shape_var]
+        for v in every:
+            v.trace_add("write", self._inputs_changed)
+
+    def _inputs_changed(self, *_):
+        if not self._stale and getattr(self, "_generated", None) and self.body_text().strip():
+            self._set_stale(True)
+
+    def _set_stale(self, stale):
+        self._stale = stale
+        btn = getattr(self, "generate_btn", None)
+        if btn is not None:
+            btn.configure(text="Generate   (inputs changed)" if stale else "Generate")
 
     # ================================================================== state / undo
     def state(self):
@@ -500,7 +731,8 @@ class MainApp:
             "inputs": {"common": {k: v.get() for k, v in self.vars.items()},
                        **{s: {k: v.get() for k, v in fs.items()} for s, fs in self.shape_vars.items()}},
             "options": {"auto_orient": self.auto_orient_var.get(), "helix": self.helix_var.get(),
-                        "c_dis": self.c_dis_var.get()},
+                        "c_dis": self.c_dis_var.get(), "inward": self.inward_var.get(),
+                        "approach": self.approach_var.get(), "lift": self.lift_var.get()},
             "output": self.output_text.get("1.0", "end-1c"),
         }
 
@@ -521,11 +753,16 @@ class MainApp:
         self.auto_orient_var.set(bool(opts.get("auto_orient", True)))
         self.helix_var.set(bool(opts.get("helix", False)))
         self.c_dis_var.set(bool(opts.get("c_dis", True)))
+        self.inward_var.set(bool(opts.get("inward", False)))
+        self.approach_var.set(bool(opts.get("approach", False)))      # older projects: no approach moves
+        self.lift_var.set(str(opts.get("lift", DEFAULT_LIFT)))
         self.set_shape(shape)
         self.output_text.delete("1.0", tk.END)
         self.output_text.insert("1.0", st.get("output", ""))
         self.output_text.edit_reset()
         self._highlight()
+        self._sel_line = None
+        self._set_stale(False)
         if redraw:
             self.view = None
             self.redraw()
@@ -559,17 +796,22 @@ class MainApp:
         shape = self.shape_var.get()
         fs = self.shape_vars[shape]
         try:
-            common = {k: float(self.vars[k].get()) for k in ("step", "layer_height", "a", "b", "c")}
-            turns_f, layers_f = float(self.vars["turns"].get()), float(self.vars["layers"].get())
+            common = {k: to_number(self.vars[k].get(), FIELD_NAMES[k]) for k in ("step", "layer_height", "a", "b", "c")}
+            turns_f = to_number(self.vars["turns"].get(), FIELD_NAMES["turns"])
+            layers_f = to_number(self.vars["layers"].get(), FIELD_NAMES["layers"])
             vals = {}
             for k, label, _ in SHAPE_FIELDS[shape]:
                 text = fs[k].get().strip()
-                if k == "corner_radius" and not text:
+                if k == "file":
+                    vals[k] = text
+                elif not text and (k == "corner_radius" or (shape == "import" and k in IMPORT_BLANK_OK)):
                     vals[k] = None
                 else:
-                    vals[k] = float(text)
-        except ValueError:
-            messagebox.showerror("Input Error", "Please enter numbers in all fields (Corner Radius may be blank).")
+                    vals[k] = to_number(text, FIELD_NAMES.get(k, k))
+        except _BadField as ex:
+            messagebox.showerror("Input Error", "'%s' is not a number.\n\nPlease enter numbers in all fields (%s)."
+                                 % (ex, "Corner Radius may be blank" if shape != "import" else
+                                    "Corner radius and Smoothing may be blank"))
             return None
         if turns_f != int(turns_f) or layers_f != int(layers_f):
             messagebox.showerror("Input Error", "Turns and layers must be whole numbers.")
@@ -579,12 +821,69 @@ class MainApp:
             return cuboid.CuboidParams(length=vals["length"], width=vals["width"], corner_radius=vals["corner_radius"],
                                        xc=vals["xc"], yc=vals["yc"], z0=vals["z0"], turns=turns, layers=layers,
                                        auto_orient=self.auto_orient_var.get(), **common)
+        if shape == "import":
+            if vals["outline"] != int(vals["outline"]):
+                messagebox.showerror("Input Error", "Outline number must be a whole number.")
+                return None
+            design = None
+            if vals["file"]:
+                design = self.load_design(vals["file"])
+                if design is None:
+                    return None
+            return freeform.FreeformParams(design=design, xc=vals["xc"], yc=vals["yc"], z0=vals["z0"],
+                                           scale=vals["scale"], rotation=vals["rotation"],
+                                           outline=int(vals["outline"]), corner_radius=vals["corner_radius"],
+                                           smoothing=vals["smoothing"], turns=turns, layers=layers,
+                                           auto_orient=self.auto_orient_var.get(), inward=self.inward_var.get(),
+                                           **common)
         return cylinder.CylinderParams(xc=vals["xc"], yc=vals["yc"], z0=vals["z0"],
                                        inner_diameter=vals["inner_diameter"], turns=turns, layers=layers,
                                        auto_orient=self.auto_orient_var.get(), helix=self.helix_var.get(), **common)
 
     def _generator(self):
-        return cuboid if self.shape_var.get() == "cuboid" else cylinder
+        return GENERATORS[self.shape_var.get()]
+
+    # ---------------------------------------------------------------- imported design files
+    def load_design(self, path):
+        """The design file as an import_formats.Design (read again only if the file changed),
+        or None after an error message."""
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            stamp = None
+        if self._design and self._design[0] == path and self._design[1] == stamp:
+            return self._design[2]
+        self.root.configure(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            design = import_formats.load_design(path)
+        except import_formats.ImportError_ as ex:
+            messagebox.showerror("Import", str(ex))
+            return None
+        finally:
+            self.root.configure(cursor="")
+        self._design = (path, stamp, design)
+        self._update_shape_hint()
+        if design.notes:
+            messagebox.showwarning("Import", "\n\n".join(design.notes))
+        return design
+
+    def choose_design_file(self):
+        path = filedialog.askopenfilename(filetypes=import_formats.FILETYPES, title="Import Design File")
+        if path:
+            self.import_design(path)
+
+    def import_design(self, path):
+        """Switch to Import with this design file and generate its path right away.
+        Returns True if the file was read."""
+        if self.load_design(path) is None:
+            return False
+        self.push_undo()
+        self.shape_vars["import"]["file"].set(path)
+        self.shape_vars["import"]["outline"].set("1")
+        self.set_shape("import")
+        self.generate(record_undo=False)
+        return True
 
     def generate(self, record_undo=True):
         p = self.read_params()
@@ -595,13 +894,43 @@ class MainApp:
         if errors:
             messagebox.showerror("Input Error", "\n".join(errors))
             return False
-        items, info = gen.generate(p)
+        lift = self.read_lift()
+        if lift is False:
+            return False
+        self.root.configure(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            items, info = gen.generate(p)
+        except ValueError as ex:                        # e.g. an imported outline that cannot be offset
+            messagebox.showerror("Generate", str(ex))
+            return False
+        finally:
+            self.root.configure(cursor="")
+        if lift:
+            items = pm.add_approach_retract(items, lift)
+        warnings = warnings + [w for w in info.get("warnings", []) if w not in warnings]
         if record_undo:
             self.push_undo()
         self.show_items(items)
         if warnings:
             messagebox.showwarning("Check the path", "\n".join(warnings))
         return True
+
+    def read_lift(self, quiet=False):
+        """Approach / retract height: a number > 0, None if the option is off, False after an
+        error message (not a number, or not above 0)."""
+        if not self.approach_var.get():
+            return None
+        try:
+            lift = to_number(self.lift_var.get(), FIELD_NAMES["lift"])
+            if lift <= 0:
+                raise _BadField(FIELD_NAMES["lift"])
+        except _BadField:
+            if not quiet:
+                messagebox.showerror("Input Error", "The approach height must be a number above 0 (mm), "
+                                     "or untick 'Approach from above'.")
+            return False
+        return lift
 
     # ---------------------------------------------------------------- shown rounding
     def _decimals(self):
@@ -623,6 +952,8 @@ class MainApp:
         self.output_text.edit_reset()
         self._generated = (items, text)
         self._highlight()
+        self._sel_line = None
+        self._set_stale(False)
         self.view = None
         self.redraw()
         self._update_info()
@@ -648,6 +979,7 @@ class MainApp:
         self.info.config(text=("as exported: %d decimals" % settings.decimals) if settings.decimals is not None
                          else "as exported: full precision")
         self._update_legend(moves)
+        self.warnings = path_warnings(items)
         if not moves:
             return
         pts = [q for m in moves for q in m['pts']]
@@ -659,6 +991,25 @@ class MainApp:
                  ("A vs travel %.1f\u00b0" % max(h['dev'] for h in hc)) if hc else "no A values"]
         for t in chips:
             ttk.Label(self.chips, text=t, style="Chip.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        n = len(self.warnings)
+        self.checks_chip = ttk.Label(self.chips, style="Chip.TLabel", cursor="hand2",
+                                     text="\u2713 checks OK" if not n else "\u26a0 %d to check" % n)
+        self.checks_chip.pack(side=tk.LEFT, padx=(0, 6))
+        self.checks_chip.bind("<Button-1>", lambda e: self.show_checks())
+
+    def show_checks(self):
+        """The list behind the 'checks' chip."""
+        if self.warnings:
+            messagebox.showwarning("Checks before printing", "\n\n".join("\u2022 " + w for w in self.warnings))
+        else:
+            messagebox.showinfo("Checks before printing",
+                                "Nothing found: the path is on the bed (%g x %g mm), arcs are %g mm or wider, "
+                                "no sharp corners, and the head follows the travel direction.\n\n"
+                                "Not checked: the robot's reach and the speed." % (BED_X, BED_Y, MIN_RADIUS_WARN))
+
+    def _checks_text(self):
+        return ("\n\nTo check before printing:\n" + "\n".join("\u2022 " + w for w in self.warnings)) \
+            if self.warnings else ""
 
     def _update_legend(self, moves):
         for w in self.legend.winfo_children():
@@ -782,12 +1133,24 @@ class MainApp:
         for k in range(int(H / g) + 2):
             y = ty % g + (k - 1) * g
             c.create_line(0, y, W, y, fill=P["grid"])
+        x0, y0 = scr((0.0, 0.0))                        # the bed plate
+        x1, y1 = scr((BED_X, BED_Y))
+        c.create_rectangle(x0, y1, x1, y0, outline=P["muted"], dash=(4, 3))
+        c.create_text(x0 + 4, y0 - 3, anchor="sw", fill=P["muted"], font=(ui_theme.UI_FONT, 8),
+                      text="bed %g \u00d7 %g" % (BED_X, BED_Y))
+        self._screen_moves = []
+        picked = None
         for m in moves:
             coords = []
             for q in m['pts']:
                 coords.extend(scr(q))
             c.create_line(*coords, fill=P["transition"] if m['transition'] else P["path"],
                           width=2.2 if m['transition'] else 1.6, capstyle=tk.ROUND)
+            self._screen_moves.append((m['line'], coords))
+            if m['line'] == self._sel_line:
+                picked = coords
+        if picked:
+            c.create_line(*picked, fill="#f59e0b", width=4, capstyle=tk.ROUND)
         for q, col in ((start, P["start"]), (moves[-1]['pts'][-1] if moves else None, P["end"])):
             if q:
                 x, y = scr(q)
@@ -805,11 +1168,46 @@ class MainApp:
 
     def _press(self, e):
         self._last = (e.x, e.y)
+        self._moved = 0
+
+    def _release(self, e):
+        """A click (no drag) on the path: mark that move and show its line in the program."""
+        if getattr(self, "_moved", 0) > 3:
+            return
+        best = None
+        for line, coords in getattr(self, "_screen_moves", []):
+            for k in range(0, len(coords) - 2, 2):
+                ax, ay, bx, by = coords[k:k + 4]
+                dx, dy = bx - ax, by - ay
+                l2 = dx * dx + dy * dy
+                t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((e.x - ax) * dx + (e.y - ay) * dy) / l2))
+                d = math.hypot(e.x - ax - t * dx, e.y - ay - t * dy)
+                if best is None or d < best[0]:
+                    best = (d, line)
+        self.pick_line(best[1] if best and best[0] <= 8 else None)
+
+    def pick_line(self, line, scroll=True):
+        """Mark the move written on item `line` (0-based) in the top view and in the text."""
+        self._sel_line = line
+        t = self.output_text
+        t.tag_remove("picked", "1.0", tk.END)
+        if line is not None:
+            t.tag_add("picked", "%d.0" % (line + 1), "%d.end" % (line + 1))
+            if scroll:
+                t.see("%d.0" % (line + 1))
+        self.redraw()
+
+    def _text_clicked(self, event=None):
+        """A click on a LIN / CIRC line of the program: mark that move in the top view."""
+        line = int(self.output_text.index("insert").split(".")[0]) - 1
+        known = [ln for ln, _ in getattr(self, "_screen_moves", [])]
+        self.pick_line(line if line in known else None, scroll=False)
 
     def _drag(self, e):
         if self.view is None:
             return
         dx, dy = e.x - self._last[0], e.y - self._last[1]
+        self._moved = getattr(self, "_moved", 0) + abs(dx) + abs(dy)
         self._last = (e.x, e.y)
         s, tx, ty = self.view
         self.view = (s, tx + dx, ty + dy)
@@ -861,10 +1259,143 @@ class MainApp:
         if profile_error:
             messagebox.showwarning("Export Settings", profile_error)
         code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
-        with open(path, "w") as f:
-            f.write(code)
+        try:
+            with open(path, "w") as f:
+                f.write(code)
+        except (OSError, UnicodeError) as ex:           # e.g. a comment with a character Windows cannot write
+            messagebox.showerror("Export", "The file could not be written:\n%s\n\n(Comments may only hold "
+                                 "ordinary Western characters.)" % ex)
+            return False
         self._update_badge()
-        messagebox.showinfo("KRL Code Exported", "Exported with profile '%s'." % settings.profile)
+        messagebox.showinfo("KRL Code Exported", "Exported with profile '%s'.%s" % (settings.profile, self._checks_text()))
+        return True
+
+    # ================================================================== robot (transfer folder)
+    def robot_settings(self):
+        return robot_link.load_settings(ui_theme._path())
+
+    def open_robot_connection(self):
+        """Dialog: the transfer folder shared with the robot controller, with a connection test."""
+        win = self._dialog("Robot Connection")
+        st = self.robot_settings()
+        ttk.Label(win, justify=tk.LEFT, text=(
+            "Send to Robot saves the program into ONE folder that the robot can also open over the\n"
+            "network cable, so you do not carry the USB stick. On the smartPAD you copy the file from\n"
+            "that folder into R1\\Program, as you do today from the stick.\n\n"
+            "To try it without the robot: choose any folder on this PC, press Test connection, then\n"
+            "use Send to Robot. Not tried on the real robot yet: see the Setup guide.")).grid(
+                row=0, column=0, columnspan=3, padx=14, pady=(12, 8), sticky="w")
+        ttk.Label(win, text="Transfer folder").grid(row=1, column=0, padx=(14, 6), sticky="w")
+        var = tk.StringVar(value=st["folder"])
+        entry = ttk.Entry(win, textvariable=var, width=52, style="Field.TEntry")
+        entry.grid(row=1, column=1, sticky="ew")
+
+        def browse():
+            d = filedialog.askdirectory(parent=win, title="Transfer folder", initialdir=var.get() or None)
+            if d:
+                var.set(os.path.normpath(d))
+        ttk.Button(win, text="Browse\u2026", style="Rounded.TButton", cursor="hand2", command=browse).grid(
+            row=1, column=2, padx=(6, 14))
+        status = ttk.Label(win, text="", style="Muted.TLabel", wraplength=520, justify=tk.LEFT)
+        status.grid(row=2, column=0, columnspan=3, padx=14, pady=(8, 0), sticky="w")
+
+        def test():
+            status.config(text="Checking\u2026")
+            win.update_idletasks()
+            ok, msg = robot_link.check_folder(var.get())
+            status.config(text=("\u2713  " if ok else "\u2717  ") + msg)
+            return ok
+
+        def save():
+            st["folder"] = var.get().strip()
+            robot_link.save_settings(ui_theme._path(), st)
+            win.destroy()
+        row = ttk.Frame(win, style="In.TFrame")
+        row.grid(row=3, column=0, columnspan=3, pady=12)
+        ttk.Button(row, text="Setup guide", style="Rounded.TButton", cursor="hand2",
+                   command=lambda: self.show_robot_guide(win)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(row, text="Test connection", style="Rounded.TButton", cursor="hand2", command=test).pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(row, text="Save", width=10, style="CardPrimary.TButton", cursor="hand2", command=save).pack(
+            side=tk.LEFT, padx=4)
+        win.var, win.test, win.save, win.status = var, test, save, status
+        return win
+
+    def show_robot_guide(self, parent=None):
+        """Step-by-step text: what Send to Robot does and how to set it up in the lab."""
+        win = self._dialog("Sending to the robot over the network")
+        text = tk.Text(win, width=96, height=30, wrap=tk.WORD, relief="flat", font=(ui_theme.UI_FONT, ui_theme.UI_SIZE),
+                       bg=self.P["card"], fg=self.P["text"], highlightthickness=0, padx=14, pady=10)
+        text.insert("1.0", ROBOT_GUIDE)
+        text.configure(state="disabled")
+        text.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(win, text="Close", width=10, style="CardPrimary.TButton", cursor="hand2",
+                   command=win.destroy).pack(pady=(0, 12))
+        win.text = text
+        return win
+
+    def send_to_robot(self):
+        """Ask for the program name and write the .src into the robot's transfer folder."""
+        if not self.body_text().strip():
+            messagebox.showinfo("Send to Robot", "Nothing to send yet. Press Generate first.")
+            return None
+        st = self.robot_settings()
+        if not st["folder"]:
+            messagebox.showinfo("Send to Robot", "Set the robot's transfer folder first (Tools > Robot Connection).")
+            return self.open_robot_connection()
+        win = self._dialog("Send to Robot")
+        ttk.Label(win, text="Program name (the file becomes <name>.src in the transfer folder):").grid(
+            row=0, column=0, columnspan=2, padx=14, pady=(12, 6), sticky="w")
+        var = tk.StringVar(value=st["last_name"])
+        entry = ttk.Entry(win, textvariable=var, width=30, style="Field.TEntry")
+        entry.grid(row=1, column=0, padx=(14, 6), sticky="w")
+        entry.focus_set()
+        ttk.Label(win, text="Folder: " + st["folder"], style="Muted.TLabel").grid(
+            row=2, column=0, columnspan=2, padx=14, pady=(6, 0), sticky="w")
+
+        def ok(event=None):
+            if self.send_program_to(var.get().strip(), st["folder"], parent=win):
+                win.destroy()
+        ttk.Button(win, text="Send", command=ok, width=10, style="CardPrimary.TButton", cursor="hand2").grid(
+            row=1, column=1, padx=(0, 14))
+        ttk.Label(win, text="").grid(row=3, column=0, pady=4)
+        entry.bind("<Return>", ok)
+        win.var, win.ok = var, ok
+        return win
+
+    def send_program_to(self, name, folder, parent=None):
+        """Build the program like Export and write <name>.src into `folder` (checked by reading
+        it back). Returns True if it was sent."""
+        parent = parent or self.root
+        if not krl_export.is_valid_program_name(name):
+            messagebox.showerror("Invalid Program Name", "'%s' is not a valid KRL program name.\n\n%s\n\nNothing was sent."
+                                 % (name, krl_export.PROGRAM_NAME_RULE), parent=parent)
+            return False
+        settings, profile_error = krl_export.active_settings()
+        if profile_error:
+            messagebox.showwarning("Export Settings", profile_error, parent=parent)
+        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
+        self.root.configure(cursor="watch")
+        self.root.update_idletasks()
+        try:
+            try:
+                path = robot_link.send_program(folder, name, code)
+            except robot_link.ProgramExists as ex:
+                if not messagebox.askyesno("Send to Robot", "%s\n\nReplace it?" % ex, parent=parent):
+                    return False
+                path = robot_link.send_program(folder, name, code, overwrite=True)
+        except robot_link.RobotLinkError as ex:
+            messagebox.showerror("Send to Robot", str(ex), parent=parent)
+            return False
+        finally:
+            self.root.configure(cursor="")
+        st = self.robot_settings()
+        st["last_name"] = name
+        robot_link.save_settings(ui_theme._path(), st)
+        self._update_badge()
+        messagebox.showinfo("Send to Robot", "Sent with profile '%s':\n%s\n\nOn the smartPAD, copy it into "
+                            "R1\\Program (Navigator) and select it there.%s"
+                            % (settings.profile, path, self._checks_text()), parent=parent)
         return True
 
     def save_project(self):
@@ -873,13 +1404,35 @@ class MainApp:
         if path:
             self.save_project_to(path)
 
+    def save(self):
+        """File > Save: into the project file that is open, or ask for one the first time."""
+        if self.project_path:
+            return self.save_project_to(self.project_path)
+        self.save_project()
+        return bool(self.project_path) and not self.is_dirty()
+
     def save_project_to(self, path):
         try:
             project_files.save_project(path, "main", self.state())
         except OSError as ex:
             messagebox.showerror("Save Project", "Could not save the project:\n%s" % ex)
             return False
+        self.project_path = path
+        self._saved_state = self.state()
         self._set_title(path)
+        return True
+
+    def is_dirty(self):
+        """Is there a program that was changed since the last Save / Open?"""
+        return bool(self.body_text().strip()) and self.state() != self._saved_state
+
+    def on_close(self):
+        """Closing the window: ask about unsaved work first. Returns True if the app closed."""
+        if self.is_dirty():
+            answer = messagebox.askyesnocancel("KRL Generator", "Save the project before closing?")
+            if answer is None or (answer and not self.save()):
+                return False
+        self.root.destroy()
         return True
 
     def open_project(self):
@@ -924,8 +1477,11 @@ class MainApp:
                 # regenerated output (rounded); otherwise keep the saved text as it is.
                 p = self.read_params(quiet=True)
                 same = False
-                if p is not None and not self._generator().validate(p)[0]:
+                lift = self.read_lift(quiet=True)
+                if p is not None and lift is not False and not self._generator().validate(p)[0]:
                     items, _ = self._generator().generate(p)
+                    if lift:
+                        items = pm.add_approach_retract(items, lift)
                     same = self.round_text(pm.program_to_krl(items) + "\n") == self.round_text(saved)
                     if same:
                         self.show_items(items)
@@ -938,6 +1494,8 @@ class MainApp:
         self.redraw()
         self._update_info()
         self._set_title(path, converted_from=None if kind == "main" else project_files.APP_NAMES[kind])
+        self.project_path = path if kind == "main" else None     # an old project is never overwritten by Save
+        self._saved_state = self.state()
         warning = project_files.profile_mismatch(data)
         if warning:
             messagebox.showwarning("Open Project", warning)

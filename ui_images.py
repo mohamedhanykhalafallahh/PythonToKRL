@@ -213,6 +213,35 @@ def icon_cylinder(size, color, stroke=None):
     return png_b64(size, size, cov)
 
 
+def icon_import(size, color, stroke=None):
+    """Paper plane (a 'send' arrow pointing to the upper left): the imported design flies in.
+    The upper wing is a little lighter than the lower one, like a folded sheet."""
+    col = hex_rgb(color)
+    s_ = float(size)
+    tip, right, notch, bottom = (0.10 * s_, 0.10 * s_), (0.92 * s_, 0.40 * s_), (0.60 * s_, 0.60 * s_), \
+        (0.40 * s_, 0.92 * s_)
+
+    def inside(x, y, tri):
+        sign = None
+        for k in range(3):
+            (ax, ay), (bx, by) = tri[k], tri[(k + 1) % 3]
+            c = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+            if c != 0:
+                if sign is None:
+                    sign = c > 0
+                elif (c > 0) != sign:
+                    return False
+        return True
+
+    def cov(x, y):
+        if inside(x, y, (tip, right, notch)):
+            return (col, 0.72)
+        if inside(x, y, (tip, notch, bottom)):
+            return (col, 1.0)
+        return None
+    return png_b64(size, size, cov)
+
+
 def app_icon_cov(size, back="#1e3a5f", rings=("#93c5fd", "#3b82f6", "#ffffff"), dot="#f59e0b"):
     """Coverage function of the app icon: three stacked rounded loops + the print head (dot)."""
     bg, rc, dc = hex_rgb(back), [hex_rgb(c) for c in rings], hex_rgb(dot)

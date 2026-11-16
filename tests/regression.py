@@ -27,6 +27,8 @@ APP = os.path.join(REPO, "PythonApplication6.py")
 GOLDEN = os.path.join(HERE, "golden")
 FIXTURES = os.path.join(HERE, "fixtures")   # files made by retired apps (App7 project + its export)
 sys.path.insert(0, REPO)   # the app imports its sibling modules (krl_export, ...)
+sys.path.insert(0, HERE)
+import checks_import       # free-form import (SVG / DXF / STL) and robot transfer checks  # noqa: E402
 
 # name: base (Xr, Yr, Zr, L, W, tool height), automation (E, W, turns, layers),
 #       tilt angle, auto-orient on/off, C_DIS on/off
@@ -469,7 +471,9 @@ def _new_main_app():
     import KRL_Generator
     root = tk.Tk()
     root.withdraw()
-    return root, KRL_Generator.MainApp(root)
+    app = KRL_Generator.MainApp(root)
+    app.approach_var.set(False)     # the goldens and the older checks are the bare print (no approach / retract)
+    return root, app
 
 
 def run_main_case(app, shape, fields, common, opts, tmpdir, name):
@@ -911,7 +915,9 @@ def check_heading():
         hc = pm.heading_checks(pm.parse_krl(open(f).read()))
         worst = max(h['dev'] for h in hc)
         off = "tilt_off" in name or "orient_off" in name
-        if (off and worst <= 20) or (not off and worst > 1.0):
+        # imported outlines: where two moves meet at a small angle, A is the mean of both directions
+        limit = 3.5 if name.startswith("IMP_") else 1.0
+        if (off and worst <= 20) or (not off and worst > limit):
             bad.append("%s: largest A deviation %.2f deg" % (name, worst))
     r, k = 22.5, 2 ** -0.9
     items = [pm.Ptp(pm.pose((300, 100, 0), (180, 0, 180))), pm.Lin(pm.pose((100 + r, 100, 0), (180, 0, 180))),
@@ -1140,6 +1146,7 @@ def main():
         krl_export.PROFILES_PATH = os.path.join(tmpdir, "no_profiles_here.json")
         ui_theme.SETTINGS_PATH = os.path.join(tmpdir, "app_settings.json")     # never the user's theme file
         runs =[(n, c, run_case) for n, c in CASES.items()] + [(n, c, run_cyl_case) for n, c in CYL_CASES.items()]
+        runs += [(n, c, checks_import.run_import_case) for n, c in checks_import.IMPORT_CASES.items()]
         for name, case, runner in runs:
             try:
                 out = runner(case, tmpdir, name)
@@ -1181,7 +1188,16 @@ def main():
                              ("main app text box rounded like the export", lambda: check_box_rounding(tmpdir)),
                              ("packaged-exe behaviour (simulated sys.frozen)", check_frozen_mode),
                              ("light / dark theme", check_theme),
-                             ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir))):
+                             ("invalid file name not saved", lambda: check_invalid_name_not_saved(tmpdir)),
+                             ("outline geometry (offset, corner rounding, LIN / CIRC fit)", checks_import.check_contours),
+                             ("design file readers (SVG, DXF, STL)", lambda: checks_import.check_import_formats(tmpdir)),
+                             ("free-form generator (connected, tangent, A, Z, messages)", checks_import.check_freeform),
+                             ("main app: Import shape, projects, undo", lambda: checks_import.check_main_import(tmpdir)),
+                             ("robot transfer folder (settings, send, app flow)",
+                              lambda: checks_import.check_robot_link(tmpdir)),
+                             ("STL slices: simplify, tight fillets, layer tracking", checks_import.check_mesh_outlines),
+                             ("approach / retract, checks, comma, save, click to find a line",
+                              lambda: checks_import.check_polish(tmpdir))):
             problems = check()
             if problems:
                 failed += len(problems)
