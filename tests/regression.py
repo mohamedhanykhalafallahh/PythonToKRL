@@ -28,6 +28,7 @@ GOLDEN = os.path.join(HERE, "golden")
 FIXTURES = os.path.join(HERE, "fixtures")   # files made by retired apps (App7 project + its export)
 sys.path.insert(0, REPO)   # the app imports its sibling modules (krl_export, ...)
 sys.path.insert(0, HERE)
+import checks_robot        # robot arm model, robot in the 3D view  # noqa: E402
 import checks_import       # free-form import (SVG / DXF / STL) and robot transfer checks  # noqa: E402
 
 # name: base (Xr, Yr, Zr, L, W, tool height), automation (E, W, turns, layers),
@@ -1201,7 +1202,11 @@ def main():
                              ("import as drawn: infinity, open path, fill, no pop-ups, suggestions",
                               lambda: checks_import.check_import_auto(tmpdir)),
                              ("spline export (SPLINE block: SLIN straights, SPL points on curves)",
-                              lambda: checks_import.check_spline(tmpdir))):
+                              lambda: checks_import.check_spline(tmpdir)),
+                             ("robot arm model (kinematics, Status / Turn, reach, limits, singularity)",
+                              checks_robot.check_robot_model),
+                             ("robot in the checks chip and in the 3D view (slider, Play)",
+                              lambda: checks_robot.check_robot_view(_new_main_app))):
             problems = check()
             if problems:
                 failed += len(problems)

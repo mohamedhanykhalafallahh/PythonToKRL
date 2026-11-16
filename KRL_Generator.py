@@ -33,6 +33,7 @@ import krl_export
 import path_model as pm
 import project_files
 import robot_link
+import robot_model
 import shapes
 import ui_images
 import ui_theme
@@ -82,6 +83,7 @@ FIELD_NAMES = {"step": "Turn step E", "layer_height": "Layer height", "turns": "
 
 # The bed plate in the calibrated base (BASE_DATA[1]: origin = lower-left corner, Z 0 = first contact)
 BED_X, BED_Y = 300.0, 455.0
+view3d.BED = (BED_X, BED_Y)                         # drawn under the robot in the 3D view
 Z_LOW_WARN = -5.0            # mm: a path lower than this is reported (a pressed first layer is about -2.5)
 MIN_RADIUS_WARN = 20.0       # mm: smallest arc the head is known to follow well
 CORNER_WARN = 5.0            # deg: a corner sharper than this is reported
@@ -1065,6 +1067,9 @@ class MainApp:
         self._update_legend(moves)
         is_import = self.shape_var.get() == "import"
         self.warnings = path_warnings(items, tips=is_import)
+        rep = self.robot_report(items, settings)
+        if rep is not None:
+            self.warnings += rep.messages               # reach, axis limits, singularities
         if self._notes[1] and self.output_text.get("1.0", "end-1c") == self._notes[0]:
             self.warnings += self._notes[1]             # what the generator said about this very program
         if not moves:
@@ -1086,6 +1091,23 @@ class MainApp:
         self.checks_chip.pack(side=tk.LEFT, padx=(0, 6))
         self.checks_chip.bind("<Button-1>", lambda e: self.show_checks())
 
+    def robot_report(self, items=None, settings=None):
+        """The program on the robot model (robot_model.analyse): reach, axis limits, singularities.
+        Kept until the text or the TOOL / BASE change. None if it cannot be worked out."""
+        if items is None:
+            items = pm.parse_krl(self.body_text())
+        settings = settings or krl_export.active_settings()[0]
+        key = (self.body_text(), tuple(settings.base), tuple(settings.tool))
+        cached = getattr(self, "_robot_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        try:
+            rep = robot_model.analyse(items, settings, step=25.0, max_poses=1500)
+        except Exception:                               # a check must never stop the app
+            rep = None
+        self._robot_cache = (key, rep)
+        return rep
+
     def show_checks(self):
         """The list behind the 'checks' chip."""
         text = "\n\n".join("\u2022 " + w for w in self.warnings)
@@ -1100,7 +1122,19 @@ class MainApp:
             messagebox.showinfo("Checks before printing",
                                 "Nothing found: the path is on the bed (%g x %g mm), arcs are %g mm or wider, "
                                 "no sharp corners, and the head follows the travel direction.\n\n"
-                                "Not checked: the robot's reach and the speed." % (BED_X, BED_Y, MIN_RADIUS_WARN))
+                                "%s\n\nNot checked: the speed, and collisions of the head or the arm."
+                                % (BED_X, BED_Y, MIN_RADIUS_WARN, self._robot_ok_text()))
+
+    def _robot_ok_text(self):
+        rep = self.robot_report()
+        if rep is None or not rep.ranges:
+            return "The robot's reach could not be checked."
+        r = rep.robot
+        turns = (" (axis 6 is counted as endless: it turns %.1f times)"
+                 % ((rep.ranges[5][1] - rep.ranges[5][0]) / 360.0)) if r.a6_endless else ""
+        return ("Robot model (%s, from the data sheet): every point is within reach (arm stretched to "
+                "%.0f %% at most), all axes stay inside their limits%s, axis 5 stays %.0f deg away from 0.\n%s"
+                % (r.name, 100.0 * rep.stretch, turns, rep.min_a5, rep.summary()))
 
     def round_corners_now(self):
         """The one-click fix for sharp corners / tight arcs of an imported design: set the largest
@@ -1336,7 +1370,9 @@ class MainApp:
         return d
 
     def open_3d_view(self):
-        view3d.open_view(self.root, self.body_text, "Nothing to show yet. Press Generate first.")
+        # the robot's position in the 3D view marks its line here (and its move in the top view)
+        view3d.open_view(self.root, self.body_text, "Nothing to show yet. Press Generate first.",
+                         on_position=self.pick_line)
 
     def _start_tool(self, script_name, title, extra_args=()):
         """Start one of the older editors as its own window. '--from-main' makes its Back
