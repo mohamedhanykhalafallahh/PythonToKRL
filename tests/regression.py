@@ -1197,7 +1197,9 @@ def main():
                               lambda: checks_import.check_robot_link(tmpdir)),
                              ("STL slices: simplify, tight fillets, layer tracking", checks_import.check_mesh_outlines),
                              ("approach / retract, checks, comma, save, click to find a line",
-                              lambda: checks_import.check_polish(tmpdir))):
+                              lambda: checks_import.check_polish(tmpdir)),
+                             ("import as drawn: infinity, open path, fill, no pop-ups, suggestions",
+                              lambda: checks_import.check_import_auto(tmpdir))):
             problems = check()
             if problems:
                 failed += len(problems)

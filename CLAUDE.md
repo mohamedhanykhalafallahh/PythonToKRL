@@ -138,6 +138,12 @@ Files:
 - Units: SVG from width/height/viewBox (else 96 px per inch, with a note); DXF `$INSUNITS` (inch, foot, mm, cm, m; else mm); STL is taken as mm.
 - No extra libraries (pure Python), so the exe build is unchanged (8.4 MB).
 
+**Owner's direction (2026-11-16, third session): the user's only job is to choose the file.** He already did the work in CAD and wants it 1 : 1; if something must change he goes back to CAD. So:
+- Choosing a file resets Scale 1, Rotation 0, Corner rad. blank, Outline 1, Smoothing blank, sets Layers to the model's height for an STL, and generates. The panel shows only the file, Centre X/Y and Start Z; the other fields are folded behind "More settings" (`more_var`, `show_more`; shown automatically when a project uses them).
+- **No pop-up after an import.** File notes and generator notes go behind the checks chip (`_notes`), each with a suggestion (`path_warnings(items, tips=True)`). Clicking the chip offers the one-click fix for sharp corners / tight arcs: `round_corners_now()` sets the largest of 20 / 15 / 10 / 5 mm that the shape allows and generates again. The app does NOT round corners by itself: that would no longer be 1 : 1.
+- **Open paths and paths that cross themselves** (an infinity shape): `Design.paths` lists `outline`, then `crossing`, then `open` (`contours.crosses_itself`). The last two cannot be offset, so `freeform._generate_trace` follows them exactly as drawn, one pass per layer (Turns is not used). A crossing path climbs to the next layer over its last stretch; an open path is printed back and forth (the first stretch of the way back climbs; the head turns round at the ends, which the checks report). At a crossing the fiber lies on itself (a note says so). Verified on an infinity shape: within 0.05 mm of the drawing, corners at most 2.5 deg, A within 1.2 deg.
+- **Fill** (`fill`, check box "Fill the shape"): inward turns E apart until the next loop would be shorter than 60 mm or narrower than 40 mm (`FILL_MIN_LOOP`, `FILL_MIN_WIDTH`); if the inside splits, only the largest area is filled. Limits, told to the owner: inner turns of a shape with corners get tight (inward offsets keep corners sharp), a core stays open, and holes cannot be filled around without cutting the fiber or crossing it. Ideas not built: a zigzag fill with wide U-turns, or crossing over the first ring to reach the area behind a hole.
+
 Fields (Import panel): Choose file, Centre X/Y (the middle of the shape's bounding box goes there), Start Z, Scale, Rotation (deg, counter-clockwise), Corner rad. (blank = keep corners), Outline no., Smoothing (blank = automatic), and the option "Turns grow inward (drawing = outside of the part)". Path and Orientation fields are the common ones. File > Import Design File (Ctrl+I) chooses a file, switches to Import and generates at once.
 
 Path (`freeform.generate`):
@@ -158,9 +164,9 @@ STL lessons from the owner's 19 Creo parts (2026-11-16, `C:\Users\moham\Desktop\
 - Layer tracking: each layer takes the largest outline that lies OVER the outline of the layer below (first layer: the largest), so the wall goes up one part of the model instead of jumping to whatever is largest. Notes tell when a layer has separate parts or does not lie over the one below.
 - These parts are small machine parts (20 to 150 mm, sharp corners, holes, several bodies). With one continuous fiber and a roller that needs about 20 mm radius they can only be followed roughly: the print is the outer wall of ONE body, corners need a Corner radius, holes and second bodies are left out. The owner accepts this for now.
 
-How the offset works (`contours.offset`): every edge is moved along its normal; corners that open get an arc, corners that close get the crossing point of the two moved edges when it fits; long edges get extra points; then every point closer to the original outline than the offset is dropped and the remaining stretches are joined where they cross. It is exact to about 0.002 mm. Not handled: outlines that cross themselves (an infinity shape), open paths as a print, several outlines in one print.
+How the offset works (`contours.offset`): every edge is moved along its normal; corners that open get an arc, corners that close get the crossing point of the two moved edges when it fits; long edges get extra points; then every point closer to the original outline than the offset is dropped and the remaining stretches are joined where they cross. It is exact to about 0.002 mm. Not handled: several outlines in one print (paths that are open or cross themselves are traced, see above).
 
-Projects: `inputs.import` holds the design file PATH (not a copy) and the fields; `options.inward`. If the file is missing when a project is opened, the saved output is kept with the usual notice.
+Projects: `inputs.import` holds the design file PATH (not a copy) and the fields; `options.inward`, `options.fill`. If the file is missing when a project is opened, the saved output is kept with the usual notice.
 
 ## Send to Robot (network instead of the USB stick, 2026-11-16)
 What was built: **File > Send to Robot** (Ctrl+Shift+R, also a button) builds the program exactly like Export and writes `<name>.src` into a TRANSFER FOLDER, then reads it back to check it. **Tools > Robot Connection** sets that folder (kept per PC in `app_settings.json`) and has a "Test connection" button (for a `\\host\share` path it first checks that the host answers on the Windows file-sharing port within 2.5 s, then that a file can be written). An existing program is only replaced after a question. Nothing is started on the robot from the PC: select and start stay on the smartPAD.
@@ -171,6 +177,8 @@ The transfer folder is plain Windows file sharing, one of:
 On the smartPAD the file is then copied from that folder into `R1\Program` with the Navigator (the same step as with the USB stick).
 
 The owner did not understand the first version of the dialog (2026-11-16). Now: the dialog says in plain words that it only saves the file into a folder the robot can also open, and how to try it with any local folder; a **Setup guide** button (also Help > Sending to the robot) opens `ROBOT_GUIDE` in KRL_Generator.py: what it does, that it is untried on the robot, a dry run without the robot, the lab steps, and what to do if it fails.
+
+The owner asked for a way without a cable across the lab (2026-11-16). Nothing in the app needs a cable: it needs a folder both computers reach over a network. So the controller's KLI socket can go into a wall socket of the lab network (the PC is then anywhere on it, also on Wi-Fi), or a small Wi-Fi bridge (Ethernet to Wi-Fi client) can be plugged into the controller. The guide in the app says this. No source was found that documents a Wi-Fi bridge on a KR C4 (the search results were third-party blogs; one RoboDK-related source advises against Wi-Fi for LIVE robot connections, which a file copy is not). Ask the lab's IT; never expose the controller to the internet. A cloud / internet relay was not built for that reason.
 
 **NOT tested on the robot yet (no controller at home).** To find out in the lab:
 - The KLI network address of the KR C4 (smartHMI: Start-up > Network configuration) and the PC's address in the same range; one network cable PC to X66 (KLI).
@@ -460,3 +468,10 @@ Minor:
   - Window: 715 px high for the cuboid, 758 for Import (limit about 765 on the 1536 x 864 screen: no room for another row).
   - Verified: regression ALL IDENTICAL with Python 3.7 and 3.13 (old goldens unchanged, 2 more checks), exe built with self-test OK, screenshot of `body1.stl` imported (round corner back, bed outline, picked move, checks chip).
   - Still open: manual (Import, Send to Robot, the new options), lab test of the transfer folder, speed in mm/s, recent projects, DPI awareness, biarc fitting, outline preview / seam choice.
+- 2026-11-16 (home, third session), after the owner's test of the second session:
+  - 3D view: the approach and lift moves are left out (`path_3d` marks them `aux` after the `APPROACH:` / `RETRACT:` comments; the main window's Z chip leaves them out too), so the Z exaggeration is back to normal. The window is as wide as its toolbar (Side and Reload were cut off after the ttk restyle).
+  - Import as one step, no pop-ups, suggestions with a one-click fix, open and self-crossing paths, Fill: see the owner's direction in the Free-form section. The Import panel is now 709 px high (cuboid 715). With chips the window can be about 1300 px wide.
+  - A radius of exactly 20 mm was reported as "below 20 mm" (19.99999): both checks now allow 0.01 mm.
+  - Network without a cable: see the Send to Robot section (guide text changed, nothing else).
+  - Verified: regression ALL IDENTICAL with Python 3.7 and 3.13 (goldens unchanged, new check `check_import_auto`), exe rebuilt with self-test OK, screenshots of the 3D view and of the infinity import.
+  - Committed after the owner's OK.

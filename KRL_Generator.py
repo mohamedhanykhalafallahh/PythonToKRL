@@ -101,18 +101,24 @@ def to_number(text, name):
         raise _BadField(name)
 
 
-def path_warnings(items):
+SUGGESTED_CORNER_RADIUS = (20.0, 15.0, 10.0, 5.0)     # tried in this order by 'round the corners'
+
+
+def path_warnings(items, tips=False):
     """Things to look at before printing, as a list of sentences (empty = nothing found):
-    path outside the bed, far below the bed, tight arcs, sharp corners, head not along the travel."""
+    path outside the bed, far below the bed, tight arcs, sharp corners, head not along the travel.
+    With tips (imported designs) each one ends with what to do about it."""
     out = []
+    tip = (lambda text: " " + text) if tips else (lambda text: "")
     start, moves = pm.path_3d(items)
     if not moves:
         return out
     pts = [q for m in moves for q in m['pts']]
     xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
     if min(xs) < 0 or max(xs) > BED_X or min(ys) < 0 or max(ys) > BED_Y:
-        out.append("The path leaves the bed (%g x %g mm): X %.0f to %.0f, Y %.0f to %.0f."
-                   % (BED_X, BED_Y, min(xs), max(xs), min(ys), max(ys)))
+        out.append("The path leaves the bed (%g x %g mm): X %.0f to %.0f, Y %.0f to %.0f.%s"
+                   % (BED_X, BED_Y, min(xs), max(xs), min(ys), max(ys),
+                      tip("Suggestion: change Centre X / Y, or make the part smaller (More settings > Scale).")))
     if min(zs) < Z_LOW_WARN:
         out.append("The path goes down to Z %.1f mm, more than %g mm below the bed surface." % (min(zs), -Z_LOW_WARN))
     radii, corners, pos, prev = [], [], None, None
@@ -133,13 +139,16 @@ def path_warnings(items):
                                              math.degrees(math.atan2(t[0][1], t[0][0])))))
         prev = t[1] if t else None
         pos = item.target.xyz
-    if radii and min(radii) < MIN_RADIUS_WARN:
-        out.append("Smallest arc radius is %.1f mm (below %g mm): the head may not follow it well."
-                   % (min(radii), MIN_RADIUS_WARN))
+    if radii and min(radii) < MIN_RADIUS_WARN - 0.01:
+        out.append("Smallest arc radius is %.1f mm (below %g mm): the head may not follow it well.%s"
+                   % (min(radii), MIN_RADIUS_WARN,
+                      tip("Suggestion: a Corner rad. of %g mm (More settings), or a larger part." % MIN_RADIUS_WARN)))
     sharp = [c for c in corners if c > CORNER_WARN]
     if sharp:
-        out.append("%d sharp corner%s (up to %.0f deg): the head has to turn on the spot there."
-                   % (len(sharp), "" if len(sharp) == 1 else "s", max(sharp)))
+        out.append("%d sharp corner%s (up to %.0f deg): the head has to turn on the spot there.%s"
+                   % (len(sharp), "" if len(sharp) == 1 else "s", max(sharp),
+                      tip("Suggestion: round them with a Corner rad. of %g mm (More settings), or in the CAD "
+                          "program." % MIN_RADIUS_WARN)))
     hc = pm.heading_checks(items)
     if hc and max(h['dev'] for h in hc) > A_DEV_WARN:
         out.append("The head direction A is up to %.0f deg off the travel direction."
@@ -157,8 +166,17 @@ ROBOT_GUIDE = (
     "TRY IT FIRST WITHOUT THE ROBOT\n"
     "Choose any folder on this PC as the transfer folder, press Test connection, then Send.\n"
     "The .src appears in that folder. That is all the PC side does.\n\n"
+    "IS A CABLE BETWEEN THIS PC AND THE ROBOT NEEDED?  No.\n"
+    "The program only needs a folder that both computers reach over A network. That can be:\n"
+    "- the lab's own network: plug the controller's network socket (KLI / X66) into a wall\n"
+    "  socket of the lab network; this PC can then be anywhere on that network, also on Wi-Fi;\n"
+    "- a small Wi-Fi bridge (a box that turns a network socket into a Wi-Fi client) plugged\n"
+    "  into the controller: then nothing has to reach across the lab;\n"
+    "- or one cable, when the PC stands next to the robot.\n"
+    "Sending a file over Wi-Fi is fine (it is copied and read back). Ask the lab's IT before\n"
+    "putting the controller on a shared network. Do not make it reachable from the internet.\n\n"
     "SET UP WITH THE ROBOT (once, with the person responsible for the cell)\n"
-    "1. Connect this PC and the controller with a network cable (controller socket KLI / X66).\n"
+    "1. Put this PC and the controller on the same network (see above; controller socket KLI / X66).\n"
     "2. On the smartPAD: Start-up > Network configuration. Note the controller's IP address.\n"
     "   Give this PC a fixed address in the same range (same first three numbers).\n"
     "3. Make one shared folder. Either\n"
@@ -245,10 +263,17 @@ HELP_SHAPES = {
         "- Auto-Orient: A follows the travel direction; off: A/B/C as typed."),
     "import": (
         "Import (design file)\n\n"
+        "- Just choose the file: it is printed as drawn, size 1 : 1, in the middle of the bed.\n"
+        "  Nothing pops up; the 'checks' chip under the top view lists what to look at, with a\n"
+        "  suggestion for each point. Click it: sharp corners can be rounded with one click.\n"
         "- SVG or DXF: a 2D drawing. Its closed outline is the FIRST turn, used for every layer.\n"
-        "  Several outlines in one file: Outline number picks one (1 = the largest).\n"
-        "- STL: a 3D model. It is cut at every layer height, so each layer follows the model\n"
-        "  (the number of layers is limited by the model's height).\n"
+        "  Several outlines in one file: Outline no. (More settings) picks one (1 = the largest).\n"
+        "- A path that is open or crosses itself (an infinity shape) is followed exactly as drawn,\n"
+        "  one pass per layer; Turns is not used for it.\n"
+        "- Fill the shape: inward turns until the shape is full (down to a core about 40 mm wide).\n"
+        "  Holes are not filled around: the fiber is never cut.\n"
+        "- STL: a 3D model. It is cut at every layer height, so each layer follows the model.\n"
+        "  Layers is set to the model's height when the file is chosen.\n"
         "- STEP files cannot be read: export STL (3D) or DXF (2D) from the CAD program.\n"
         "- Centre X/Y: where the middle of the shape goes on the bed. Scale and Rotation resize\n"
         "  and turn it. Start Z: height of the first layer.\n"
@@ -343,6 +368,9 @@ class MainApp:
         self.helix_var = tk.BooleanVar(value=False)
         self.c_dis_var = tk.BooleanVar(value=True)
         self.inward_var = tk.BooleanVar(value=False)     # import: turns grow inward
+        self.fill_var = tk.BooleanVar(value=False)       # import: inward turns until the shape is full
+        self.more_var = tk.BooleanVar(value=False)       # import panel: the extra settings are shown
+        self._notes = ("", [])                           # (program text, notes of the generator for it)
         self.approach_var = tk.BooleanVar(value=True)    # approach from above + lift at the end
         self.lift_var = tk.StringVar(value=DEFAULT_LIFT)
         self.project_path = None                         # the project file of File > Save
@@ -488,9 +516,12 @@ class MainApp:
         self.helix_check = ttk.Checkbutton(card, text=" Helix (single-wall tube, 1 turn only)",
                                            variable=self.helix_var, style="Check.TCheckbutton", cursor="hand2")
         self.helix_check.grid(row=4, column=0, columnspan=4, sticky="w")
-        self.inward_check = ttk.Checkbutton(card, text=" Turns grow inward (drawing = outside of the part)",
-                                            variable=self.inward_var, style="Check.TCheckbutton", cursor="hand2")
+        self.inward_check = ttk.Frame(card, style="In.TFrame")        # import only: two options in one row
         self.inward_check.grid(row=5, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(self.inward_check, text=" Turns grow inward", variable=self.inward_var,
+                        style="Check.TCheckbutton", cursor="hand2").pack(side=tk.LEFT)
+        ttk.Checkbutton(self.inward_check, text=" Fill the shape (turns until full)", variable=self.fill_var,
+                        style="Check.TCheckbutton", cursor="hand2").pack(side=tk.LEFT, padx=(14, 0))
         ap = ttk.Frame(card, style="In.TFrame")
         ap.grid(row=6, column=0, columnspan=4, sticky="w")
         ttk.Checkbutton(ap, text=" Approach from above and lift at the end,", variable=self.approach_var,
@@ -572,9 +603,9 @@ class MainApp:
             self.shape_title.config(text="Size  \u00b7  first (inner) ring, mm")
             rows = ((("xc", "Centre X"), ("yc", "Centre Y")), (("z0", "Start Z"), ("inner_diameter", "Inner diameter")))
         else:
-            self.shape_title.config(text="Design file  \u00b7  its outline is the first turn (mm, deg)")
-            rows = ((("xc", "Centre X"), ("yc", "Centre Y"), ("z0", "Start Z")),
-                    (("scale", "Scale"), ("rotation", "Rotation"), ("corner_radius", "Corner rad.")),
+            self.shape_title.config(text="Design file  \u00b7  printed as drawn, size 1 : 1")
+            rows = ((("xc", "Centre X"), ("yc", "Centre Y"), ("z0", "Start Z")),)
+            more = ((("scale", "Scale"), ("rotation", "Rotation"), ("corner_radius", "Corner rad.")),
                     (("outline", "Outline no."), ("smoothing", "Smoothing")))
         if shape == "import":           # file row: button + file name and what was found in it (2 lines)
             bar = ttk.Frame(f, style="In.TFrame")
@@ -586,6 +617,17 @@ class MainApp:
             for r, row in enumerate(rows, 2):
                 for c, (k, label) in enumerate(row):
                     self._field(f, r, c, fs[k], label, width=6, label_width=10)
+            # the other settings are rarely needed: folded away behind one line
+            link = ttk.Label(f, style="Muted.TLabel", cursor="hand2",
+                             text=("\u25be  Fewer settings" if self.more_var.get() else
+                                   "\u25b8  More settings (scale, rotation, corner radius, which outline)"))
+            link.grid(row=3, column=0, columnspan=6, sticky="w", pady=(2, 0))
+            link.bind("<Button-1>", lambda e: self.show_more(not self.more_var.get()))
+            self.more_link = link
+            if self.more_var.get():
+                for r, row in enumerate(more, 4):
+                    for c, (k, label) in enumerate(row):
+                        self._field(f, r, c, fs[k], label, width=6, label_width=10)
         else:
             for r, row in enumerate(rows, 1):
                 for c, (k, label) in enumerate(row):
@@ -599,6 +641,12 @@ class MainApp:
             else:
                 check.grid_remove()
         self._update_seg_buttons()
+
+    def show_more(self, show=True):
+        """Import panel: show or fold away the extra settings."""
+        self.more_var.set(bool(show))
+        if self.shape_var.get() == "import":
+            self._show_shape_fields()
 
     def _update_shape_hint(self, *_):
         hint = getattr(self, "shape_hint", None)
@@ -623,7 +671,7 @@ class MainApp:
             elif path:
                 hint.config(text="%s\nnot read yet (press Generate)" % name)
             else:
-                hint.config(text="SVG or DXF drawing, or STL model\nblank corner radius = keep the corners")
+                hint.config(text="SVG or DXF drawing, or STL model\nnothing else to fill in: it is printed as drawn")
 
     def _update_seg_buttons(self):
         icons = getattr(self.root, "_icons", None)
@@ -710,7 +758,8 @@ class MainApp:
             self.shape_vars["cuboid"][k].trace_add("write", self._update_shape_hint)
         # any input changed after Generate: say so on the Generate button
         every = list(self.vars.values()) + [v for fs in self.shape_vars.values() for v in fs.values()] + \
-            [self.auto_orient_var, self.helix_var, self.inward_var, self.approach_var, self.lift_var, self.shape_var]
+            [self.auto_orient_var, self.helix_var, self.inward_var, self.fill_var, self.approach_var, self.lift_var,
+             self.shape_var]
         for v in every:
             v.trace_add("write", self._inputs_changed)
 
@@ -732,6 +781,7 @@ class MainApp:
                        **{s: {k: v.get() for k, v in fs.items()} for s, fs in self.shape_vars.items()}},
             "options": {"auto_orient": self.auto_orient_var.get(), "helix": self.helix_var.get(),
                         "c_dis": self.c_dis_var.get(), "inward": self.inward_var.get(),
+                        "fill": self.fill_var.get(),
                         "approach": self.approach_var.get(), "lift": self.lift_var.get()},
             "output": self.output_text.get("1.0", "end-1c"),
         }
@@ -754,6 +804,11 @@ class MainApp:
         self.helix_var.set(bool(opts.get("helix", False)))
         self.c_dis_var.set(bool(opts.get("c_dis", True)))
         self.inward_var.set(bool(opts.get("inward", False)))
+        self.fill_var.set(bool(opts.get("fill", False)))
+        imp = inputs.get("import", {})                  # non-standard extra settings: show them
+        self.more_var.set(any(str(imp.get(k, d)).strip() not in (d, d + ".0") for k, d in
+                              (("scale", "1"), ("rotation", "0"), ("corner_radius", ""), ("outline", "1"),
+                               ("smoothing", ""))))
         self.approach_var.set(bool(opts.get("approach", False)))      # older projects: no approach moves
         self.lift_var.set(str(opts.get("lift", DEFAULT_LIFT)))
         self.set_shape(shape)
@@ -835,6 +890,7 @@ class MainApp:
                                            outline=int(vals["outline"]), corner_radius=vals["corner_radius"],
                                            smoothing=vals["smoothing"], turns=turns, layers=layers,
                                            auto_orient=self.auto_orient_var.get(), inward=self.inward_var.get(),
+                                           fill=self.fill_var.get(),
                                            **common)
         return cylinder.CylinderParams(xc=vals["xc"], yc=vals["yc"], z0=vals["z0"],
                                        inner_diameter=vals["inner_diameter"], turns=turns, layers=layers,
@@ -864,9 +920,7 @@ class MainApp:
             self.root.configure(cursor="")
         self._design = (path, stamp, design)
         self._update_shape_hint()
-        if design.notes:
-            messagebox.showwarning("Import", "\n\n".join(design.notes))
-        return design
+        return design                                   # its notes are listed behind the checks chip
 
     def choose_design_file(self):
         path = filedialog.askopenfilename(filetypes=import_formats.FILETYPES, title="Import Design File")
@@ -878,9 +932,21 @@ class MainApp:
         Returns True if the file was read."""
         if self.load_design(path) is None:
             return False
+        design = self._design[2]
         self.push_undo()
-        self.shape_vars["import"]["file"].set(path)
-        self.shape_vars["import"]["outline"].set("1")
+        fs = self.shape_vars["import"]
+        fs["file"].set(path)
+        for k, value in (("scale", "1"), ("rotation", "0"), ("corner_radius", ""), ("outline", "1"),
+                         ("smoothing", "")):
+            fs[k].set(value)                             # a new file starts as drawn, 1 : 1
+        self.more_var.set(False)
+        if design.kind == "3d":                          # the whole model: as many layers as it is high
+            try:
+                h = to_number(self.vars["layer_height"].get(), "")
+                if h > 0:
+                    self.vars["layers"].set(str(max(1, int(design.height / h + 1e-6))))
+            except _BadField:
+                pass
         self.set_shape("import")
         self.generate(record_undo=False)
         return True
@@ -911,7 +977,12 @@ class MainApp:
         warnings = warnings + [w for w in info.get("warnings", []) if w not in warnings]
         if record_undo:
             self.push_undo()
-        self.show_items(items)
+        notes = []
+        if self.shape_var.get() == "import":            # no pop-up after an import: the checks chip lists it
+            notes = [w for w in list(p.design.notes) + warnings
+                     if "sharp corner" not in w and "Smallest arc radius" not in w]    # path_warnings has these
+            warnings = []
+        self.show_items(items, notes)
         if warnings:
             messagebox.showwarning("Check the path", "\n".join(warnings))
         return True
@@ -943,7 +1014,7 @@ class MainApp:
         d = self._decimals()
         return text if d is None else pm.program_to_krl(pm.parse_krl(text), decimals=d)
 
-    def show_items(self, items):
+    def show_items(self, items, notes=()):
         """Put generated moves into the text box, rounded like the export. The full-precision
         items are kept, so a later change of the profile's decimals can re-render them."""
         text = pm.program_to_krl(items, decimals=self._decimals()) + "\n"
@@ -951,6 +1022,7 @@ class MainApp:
         self.output_text.insert(tk.END, text)
         self.output_text.edit_reset()
         self._generated = (items, text)
+        self._notes = (text, list(notes))
         self._highlight()
         self._sel_line = None
         self._set_stale(False)
@@ -964,7 +1036,7 @@ class MainApp:
         gen = getattr(self, "_generated", None)
         self._update_badge()
         if gen and self.output_text.get("1.0", "end-1c") == gen[1]:
-            self.show_items(gen[0])
+            self.show_items(gen[0], self._notes[1])
         else:
             self._update_info()
 
@@ -979,11 +1051,16 @@ class MainApp:
         self.info.config(text=("as exported: %d decimals" % settings.decimals) if settings.decimals is not None
                          else "as exported: full precision")
         self._update_legend(moves)
-        self.warnings = path_warnings(items)
+        is_import = self.shape_var.get() == "import"
+        self.warnings = path_warnings(items, tips=is_import)
+        if self._notes[1] and self.output_text.get("1.0", "end-1c") == self._notes[0]:
+            self.warnings += self._notes[1]             # what the generator said about this very program
         if not moves:
             return
-        pts = [q for m in moves for q in m['pts']]
+        shown = [m for m in moves if not m.get('aux')] or moves      # without the approach / lift moves
+        pts = [q for m in shown for q in m['pts']]
         xs, ys, zs = [q[0] for q in pts], [q[1] for q in pts], [q[2] for q in pts]
+        moves = shown
         hc = pm.heading_checks(items)
         chips = ["%d moves" % len(moves), "path %.2f m" % (pm.path_length(moves) / 1000.0),
                  "X %.0f\u2026%.0f  Y %.0f\u2026%.0f  Z %.1f\u2026%.1f mm" % (min(xs), max(xs), min(ys), max(ys),
@@ -999,13 +1076,39 @@ class MainApp:
 
     def show_checks(self):
         """The list behind the 'checks' chip."""
-        if self.warnings:
-            messagebox.showwarning("Checks before printing", "\n\n".join("\u2022 " + w for w in self.warnings))
+        text = "\n\n".join("\u2022 " + w for w in self.warnings)
+        fixable = self.shape_var.get() == "import" and any("Corner rad." in w for w in self.warnings)
+        if fixable:
+            if messagebox.askyesno("Checks before printing", text + "\n\nRound the corners now (the largest of "
+                                   "20 / 15 / 10 / 5 mm that fits the shape) and generate again?"):
+                self.round_corners_now()
+        elif self.warnings:
+            messagebox.showwarning("Checks before printing", text)
         else:
             messagebox.showinfo("Checks before printing",
                                 "Nothing found: the path is on the bed (%g x %g mm), arcs are %g mm or wider, "
                                 "no sharp corners, and the head follows the travel direction.\n\n"
                                 "Not checked: the robot's reach and the speed." % (BED_X, BED_Y, MIN_RADIUS_WARN))
+
+    def round_corners_now(self):
+        """The one-click fix for sharp corners / tight arcs of an imported design: set the largest
+        suggested Corner rad. that the shape allows and generate again. Returns the radius or None."""
+        var = self.shape_vars["import"]["corner_radius"]
+        before = var.get()
+        show = messagebox.showerror
+        messagebox.showerror = lambda *a, **k: None      # a radius that does not fit is simply skipped
+        try:
+            for r in SUGGESTED_CORNER_RADIUS:
+                var.set("%g" % r)
+                if self.generate():
+                    self.show_more(True)
+                    return r
+        finally:
+            messagebox.showerror = show
+        var.set(before)
+        messagebox.showinfo("Checks before printing", "The shape is too small for a 5 mm corner radius. "
+                            "Make it larger (More settings > Scale) or change it in the CAD program.")
+        return None
 
     def _checks_text(self):
         return ("\n\nTo check before printing:\n" + "\n".join("\u2022 " + w for w in self.warnings)) \

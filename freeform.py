@@ -12,6 +12,11 @@ Path (the same idea as the cuboid and the cylinder, for any closed outline)
     smoothly over to the next loop, or climbs to the next layer. It leaves and arrives tangent.
   - The seam (start of every loop) is put on the longest straight part of the first outline
     (else at its right-most point); the next loops start at the nearest point to it.
+  - Fill: inward turns are added until nothing useful is left (the loop would be shorter than
+    60 mm). Where the inside splits into separate areas, only the largest one is filled.
+  - A path that is OPEN, or closed but crossing itself (an infinity shape), cannot be offset:
+    it is followed exactly as drawn, one pass per layer (_generate_trace). A crossing path
+    climbs to the next layer near its end; an open path is printed back and forth.
   - The points are turned into LIN and CIRC moves (contours.fit_moves), within 0.01 mm for
     drawings and 0.05 mm for meshes (fine facets become arcs again); `smoothing` sets it.
     A wider tolerance gives fewer moves but larger angles where two moves meet.
@@ -31,6 +36,9 @@ MIN_RADIUS_WARN = 20.0      # mm: smallest arc radius the head is known to follo
 KINK_WARN = 5.0             # deg: a corner sharper than this is reported
 PTP_S, PTP_T = 2, 43        # Status / Turn on the start PTP (same as the other shapes)
 TRANSITION_STEP = 0.5       # mm: point spacing along a transition before it is fitted
+FILL_MIN_LOOP = 60.0        # mm: Fill stops when the next inward loop would be shorter than this
+FILL_MIN_WIDTH = 40.0       # mm: ... or narrower than this (two times the 20 mm radius the head can follow)
+FILL_MAX_TURNS = 300
 SMOOTH_3D = 0.05            # mm: automatic fit tolerance for sliced meshes (2D files: contours.FIT_TOL)
 
 
@@ -54,6 +62,7 @@ class FreeformParams:
     auto_orient: bool = True
     inward: bool = False                 # turns grow inward instead of outward
     smoothing: Optional[float] = None    # mm: how closely LIN / CIRC follow the points (None = automatic)
+    fill: bool = False                   # inward turns until the shape is full (Turns is not used)
 
 
 def normalize_angle(angle):
@@ -86,8 +95,8 @@ def validate(p):
         errors.append("Corner radius cannot be negative (leave it blank to keep the corners).")
     if p.smoothing is not None and not (0 < p.smoothing <= 1.0):
         errors.append("Smoothing must be between 0 and 1 mm (leave it blank for automatic).")
-    if d is not None and d.kind == "2d" and not (1 <= p.outline <= len(d.outlines)):
-        errors.append("Outline number must be 1..%d for this file." % len(d.outlines))
+    if d is not None and d.kind == "2d" and not (1 <= p.outline <= len(d.paths)):
+        errors.append("Outline number must be 1..%d for this file." % len(d.paths))
     return errors, []
 
 
@@ -121,7 +130,7 @@ def layer_outlines(p):
     A 2D design gives the same outline object for every layer."""
     d, notes = p.design, []
     if d.kind == "2d":
-        src = d.outlines[p.outline - 1]
+        src = d.paths[p.outline - 1][1]
         b = ct.bounds(src)
         base = ct.normalize(_place(src, p, ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)))
         if p.corner_radius:
@@ -312,39 +321,77 @@ def generate(p):
     errors, _ = validate(p)
     if errors:
         raise ValueError(" ".join(errors))
+    if p.design.kind == "2d" and p.design.paths[p.outline - 1][0] != "outline":
+        return _generate_trace(p, *p.design.paths[p.outline - 1])
     bases, notes = layer_outlines(p)
     n_layers = len(bases)
-    sign = -1.0 if p.inward else 1.0
+    sign = -1.0 if (p.inward or p.fill) else 1.0
 
-    cache = {}
+    cache, split_at = {}, []
 
     def turn_loop(layer, t):
         base = bases[layer]
         key = (id(base), t)
         if key not in cache:
-            try:
-                cache[key] = base if t == 0 else ct.offset_one(base, sign * p.step * t)
-            except ct.GeometryError as ex:
-                raise ct.GeometryError("Layer %d, turn %d: %s" % (layer + 1, t + 1, ex))
+            if t == 0:
+                cache[key] = base
+            else:
+                loops = ct.offset(base, sign * p.step * t)
+                if not loops:
+                    raise ct.GeometryError("Layer %d, turn %d: the shape is too small or too thin: nothing is left "
+                                           "%.3g mm %s the outline." % (layer + 1, t + 1, p.step * t,
+                                                                        "inside" if sign < 0 else "outside"))
+                if len(loops) > 1 and sign < 0:
+                    split_at.append(t + 1)
+                cache[key] = loops[0]
         return cache[key]
+
+    counts = {}
+
+    def n_turns(layer):
+        """Turns of this layer: the Turns field, or with Fill as many inward turns as fit."""
+        if not p.fill:
+            return p.turns
+        key = id(bases[layer])
+        if key not in counts:
+            n = 1
+            while n < FILL_MAX_TURNS:
+                try:
+                    nxt = turn_loop(layer, n)
+                    box = ct.bounds(nxt)
+                    if ct.perimeter(nxt) < FILL_MIN_LOOP or min(box[2] - box[0], box[3] - box[1]) < FILL_MIN_WIDTH:
+                        break
+                except ct.GeometryError:
+                    break
+                n += 1
+            counts[key] = n
+        return counts[key]
 
     seq = []                                            # (layer, turn, outline, z) in print order
     for layer in range(n_layers):
-        order = range(p.turns) if layer % 2 == 0 else range(p.turns - 1, -1, -1)
+        n = n_turns(layer)
+        order = range(n) if layer % 2 == 0 else range(n - 1, -1, -1)
         for t in order:
             seq.append((layer, t, turn_loop(layer, t), p.z0 + p.layer_height * layer))
+    if p.fill:
+        ns = sorted(set(n_turns(layer) for layer in range(n_layers)))
+        notes.append("Fill: %s inward turn%s per layer." % (ns[0] if len(ns) == 1 else "%d to %d" % (ns[0], ns[-1]),
+                                                            "" if ns == [1] else "s"))
+        if split_at:
+            notes.append("From turn %d on the inside splits into separate areas: only the largest one is filled "
+                         "(the fiber is never cut)." % min(split_at))
 
     # a mesh is made of flat facets: a wider tolerance turns them back into arcs
     tol = p.smoothing if p.smoothing is not None else (SMOOTH_3D if p.design.kind == "3d" else ct.FIT_TOL)
     entries = []                                        # ('comment', text) or a move from _fit3
-    radii = []
     first = seq[0][2]
     seam = _first_seam(first, _transition_length(p.step, ct.perimeter(first)))
     start = None
     for k, (layer, t, poly, z) in enumerate(seq):
         if k == 0 or seq[k - 1][0] != layer:
-            kind = "SINGLE TURN" if p.turns == 1 else ("TURNS 0 -> %d" % (p.turns - 1) if layer % 2 == 0
-                                                       else "TURNS %d -> 0" % (p.turns - 1))
+            nt_ = n_turns(layer)
+            kind = "SINGLE TURN" if nt_ == 1 else ("TURNS 0 -> %d" % (nt_ - 1) if layer % 2 == 0
+                                                   else "TURNS %d -> 0" % (nt_ - 1))
             entries.append(('comment', "===== LAYER %d ===== (FREE-FORM, %s)" % (layer, kind)))
         loop = ct.reseam(poly, seam)
         seam = loop[0]
@@ -370,6 +417,84 @@ def generate(p):
                             % (layer, nl, len(moves), "" if len(moves) == 1 else "s")))
         entries.extend(moves)
 
+    return _finish(p, entries, start, notes, n_layers, (n_turns(0) if p.fill else p.turns) * p.step)
+
+
+def _generate_trace(p, kind, src):
+    """A path that cannot be offset (open, or crossing itself): followed exactly as drawn, one
+    pass per layer."""
+    b = ct.bounds(src)
+    pts = _place(src, p, ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0))
+    what = "crosses itself" if kind == "crossing" else "is open"
+    notes = []
+    if p.fill or p.inward:                              # (Turns is simply not used: one pass per layer)
+        notes.append("This path %s, so it is followed exactly as drawn, one pass per layer "
+                     "(inward and Fill are not used)." % what)
+    if p.corner_radius:
+        notes.append("Corner radius is not used for a path that %s." % what)
+    tol = p.smoothing if p.smoothing is not None else ct.FIT_TOL
+    z_of = lambda layer: p.z0 + p.layer_height * layer
+    entries = []
+    if kind == "crossing":
+        notes.append("The path crosses itself: at the crossing the fiber lies on top of itself (twice the "
+                     "height there in every layer).")
+        length = ct.perimeter(pts)
+        D = _transition_length(p.step, length, p.layer_height)
+        loop = ct.reseam(pts, _first_seam(pts, D))
+        path = loop + [loop[0]]
+        start = (path[0][0], path[0][1], z_of(0))
+        for layer in range(p.layers):
+            z = z_of(layer)
+            entries.append(('comment', "===== LAYER %d ===== (FREE-FORM, AS DRAWN)" % layer))
+            entries.append(('comment', "L%d T0%s" % (layer, " - START" if layer == 0 else "")))
+            if layer == p.layers - 1:
+                entries.extend(_fit3([(x, y, z) for x, y in path], tol))
+                break
+            main, tail_ = _split_tail(path, D)
+            entries.extend(_fit3([(x, y, z) for x, y in main], tol))
+            moves = _fit3(_climb(tail_, z, z_of(layer + 1)), tol)
+            entries.append(('comment', "L%d -> L%d TRANSITION (%d move%s)"
+                            % (layer, layer + 1, len(moves), "" if len(moves) == 1 else "s")))
+            entries.extend(moves)
+    else:
+        if p.layers > 1:
+            notes.append("An open path is printed back and forth: the head turns round at both ends.")
+        length = math.fsum(ct.dist(q, r) for q, r in zip(pts, pts[1:]))
+        D = min(max(20.0, 30.0 * p.layer_height), 0.4 * length)
+        start = (pts[0][0], pts[0][1], z_of(0))
+        for layer in range(p.layers):
+            z = z_of(layer)
+            path = pts if layer % 2 == 0 else pts[::-1]
+            if layer > 0:                                # the first part of the way back climbs
+                rest, head = _split_tail(path[::-1], D)
+                head, path = head[::-1], rest[::-1]
+                moves = _fit3(_climb(head, z_of(layer - 1), z), tol)
+                entries.append(('comment', "L%d -> L%d TRANSITION (%d move%s)"
+                                % (layer - 1, layer, len(moves), "" if len(moves) == 1 else "s")))
+                entries.extend(moves)
+            entries.append(('comment', "===== LAYER %d ===== (FREE-FORM, AS DRAWN)" % layer))
+            entries.append(('comment', "L%d T0%s" % (layer, " - START" if layer == 0 else "")))
+            entries.extend(_fit3([(x, y, z) for x, y in path], tol))
+    return _finish(p, entries, start, notes, p.layers, p.step)
+
+
+def _climb(pts, z_from, z_to):
+    """The same stretch, rising from z_from to z_to with a smooth step: list of (x, y, z)."""
+    dense = _densify(pts, TRANSITION_STEP)
+    acc = [0.0]
+    for a, b in zip(dense, dense[1:]):
+        acc.append(acc[-1] + ct.dist(a, b))
+    total = acc[-1] or 1.0
+    out = []
+    for q, s_ in zip(dense, acc):
+        u = s_ / total
+        out.append((q[0], q[1], z_from + u * u * (3.0 - 2.0 * u) * (z_to - z_from)))
+    return out
+
+
+def _finish(p, entries, start, notes, n_layers, wall):
+    """Entries (comments and fitted moves) -> (items, info): orientation, warnings, numbers."""
+    radii = []
     # orientation: A at the end of a move = mean of its end direction and the next move's start
     moves = [e for e in entries if e[0] != 'comment']
 
@@ -409,7 +534,7 @@ def generate(p):
                   else "Enter a Corner radius to round them.")
         warnings.append("%d sharp corner%s (up to %.0f deg): the head has to turn on the spot there. %s"
                         % (n_sharp, "" if n_sharp == 1 else "s", max_kink, advice))
-    if radii and min(radii) < MIN_RADIUS_WARN:
+    if radii and min(radii) < MIN_RADIUS_WARN - 0.01:
         warnings.append("Smallest arc radius is %.1f mm (below %g mm): the head may not follow it well."
                         % (min(radii), MIN_RADIUS_WARN))
     _, moves3 = pm.path_3d(items)
@@ -420,7 +545,7 @@ def generate(p):
         "max_kink_deg": max_kink,
         "layers": n_layers,
         "z_range": (p.z0, p.z0 + p.layer_height * (n_layers - 1)),
-        "wall_thickness": p.turns * p.step,
+        "wall_thickness": wall,
         "warnings": warnings,
     }
     return items, info

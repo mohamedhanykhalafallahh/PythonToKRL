@@ -41,7 +41,7 @@ class View3D:
         self.on_close = on_close
         self.win = tk.Toplevel(parent)
         self.win.title(title)
-        self.win.geometry("780x620")
+        self.win.geometry("860x640")
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
         # the same look as the main window when its styles exist (ui_theme.apply was called)
@@ -72,6 +72,9 @@ class View3D:
             button(txt, lambda y=yaw, p=pitch: self.set_view(y, p)).pack(side=tk.LEFT, padx=2)
         button("Reload", self.reload, width=7).pack(side=tk.RIGHT)
 
+        self.win.update_idletasks()                 # wide enough for the whole toolbar (Side, Reload)
+        self.win.geometry("%dx640" % max(860, bar.winfo_reqwidth() + 24))
+        self.win.minsize(min(bar.winfo_reqwidth() + 24, 1200), 300)
         self.canvas = tk.Canvas(self.win, bg="white", highlightthickness=0)
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.info = tk.Label(self.win, anchor="w", justify=tk.LEFT, fg="#555555", font=("Segoe UI", 8))
@@ -96,6 +99,11 @@ class View3D:
     def reload(self):
         items = pm.parse_krl(self.get_text())
         self.start, self.moves = pm.path_3d(items)
+        # the approach from above and the lift at the end are in the program, but they are not
+        # part of the printed shape: left out here (they would squeeze the layers flat)
+        if any(m.get('aux') for m in self.moves):
+            self.moves = [m for m in self.moves if not m.get('aux')]
+            self.start = self.moves[0]['pts'][0] if self.moves else None
         self.headings = pm.heading_checks(items)
         pts = [p for m in self.moves for p in m['pts']] + ([self.start] if self.start else [])
         self.pts_all = pts

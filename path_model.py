@@ -246,10 +246,13 @@ def path_3d(items):
 
     Layers come from '; ===== LAYER n' comments. Moves after a comment containing
     'TRANSITION' are transition moves up to and including the first CIRC, or exactly the
-    next n moves if the comment says '(n moves)' (e.g. a lane change made of two arcs)."""
+    next n moves if the comment says '(n moves)' (e.g. a lane change made of two arcs).
+    'aux' is True for the straight-down / straight-up LIN after an 'APPROACH:' / 'RETRACT:'
+    comment (add_approach_retract): part of the program, but not of the printed shape."""
     moves, pos, start = [], None, None
     layer, in_transition = 0, False
     n_left = None                                   # moves left in a '(n moves)' transition
+    aux_next = False                                # the next move is the approach / retract LIN
     for idx, item in enumerate(items):
         if isinstance(item, Raw) and item.text.strip() != item.text:
             item = parse_line(item.text.strip())     # hand-indented line: still show it
@@ -259,6 +262,8 @@ def path_3d(items):
                 m = _LAYER_RE.match(line)
                 if m:
                     layer = int(m.group(1))
+                if "APPROACH:" in line or "RETRACT:" in line:
+                    aux_next = True
                 if "TRANSITION" in line:
                     in_transition = True
                     m = _N_MOVES_RE.search(line)
@@ -272,12 +277,13 @@ def path_3d(items):
         if isinstance(item, Lin) and pos is not None:
             p = item.target.xyz
             moves.append({'kind': 'LIN', 'pts': [pos, p], 'layer': layer, 'transition': in_transition,
-                          'line': idx})
+                          'line': idx, 'aux': aux_next})
+            aux_next = False
             pos = p
         elif isinstance(item, Circ) and pos is not None:
             p2 = item.target.xyz
             moves.append({'kind': 'CIRC', 'pts': arc_points_3d(pos, item.via.xyz, p2), 'layer': layer,
-                          'transition': in_transition, 'line': idx})
+                          'transition': in_transition, 'line': idx, 'aux': False})
             pos = p2
             if n_left is None:
                 in_transition = False   # a transition ends with (at most) one CIRC ...

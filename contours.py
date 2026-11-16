@@ -595,6 +595,30 @@ def chain_segments(pieces, tol=0.01):
     return closed, opened
 
 
+def crosses_itself(poly, tol=0.01):
+    """Does this closed path cross (or touch) itself, like a figure 8?"""
+    pts = simplify(poly, tol)
+    n = len(pts)
+    if n < 4:
+        return False
+    segs = []
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        segs.append((min(a[0], b[0]), max(a[0], b[0]), min(a[1], b[1]), max(a[1], b[1]), i, a, b))
+    segs.sort(key=lambda g: g[0])
+    for k, (x0, x1, y0, y1, i, a, b) in enumerate(segs):
+        for x0b, x1b, y0b, y1b, j, c, e in segs[k + 1:]:
+            if x0b > x1:
+                break                                    # sorted by their left end: no later one can reach
+            if y0b > y1 or y1b < y0:
+                continue
+            if j == i or (j + 1) % n == i or (i + 1) % n == j:
+                continue                                 # neighbours only share their corner
+            if _seg_intersection(a, b, c, e) is not None:
+                return True
+    return False
+
+
 def _simplify_open(pts, tol):
     """Douglas-Peucker: the fewest of the given points so that every dropped point is within
     tol of the remaining line (first and last point are kept)."""

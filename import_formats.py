@@ -35,14 +35,17 @@ class ImportError_(ValueError):
 
 
 class Design(object):
-    """An imported design. kind '2d': `outlines` (closed, counter-clockwise, largest first) and
-    `open_paths`. kind '3d': `triangles` [((x,y,z), (x,y,z), (x,y,z)), ...] and `zmin` / `zmax`.
+    """An imported design. kind '2d': `paths` = [(kind, points), ...] in the order of the
+    "Outline no." field: 'outline' (closed, counter-clockwise, largest first), then 'crossing'
+    (closed but crossing itself, e.g. an infinity shape; as drawn), then 'open' (as drawn).
+    `outlines`, `crossing` and `open_paths` are the three groups on their own.
+    kind '3d': `triangles` [((x,y,z), (x,y,z), (x,y,z)), ...] and `zmin` / `zmax`.
     `bounds` = (xmin, ymin, xmax, ymax) of everything; `notes` = remarks for the user."""
 
     def __init__(self, path, kind):
         self.path, self.kind = path, kind
         self.name = os.path.basename(path)
-        self.outlines, self.open_paths, self.triangles = [], [], []
+        self.outlines, self.crossing, self.open_paths, self.triangles, self.paths = [], [], [], [], []
         self.zmin = self.zmax = 0.0
         self.bounds = (0.0, 0.0, 0.0, 0.0)
         self.notes = []
@@ -66,11 +69,13 @@ class Design(object):
         w, h = self.size
         if self.kind == "3d":
             return "%d triangles, %.1f x %.1f x %.1f mm" % (len(self.triangles), w, h, self.height)
-        text = "%d closed outline%s, %.1f x %.1f mm" % (len(self.outlines), "" if len(self.outlines) == 1 else "s",
-                                                         w, h)
-        if self.open_paths:
-            text += " (+ %d open path%s, not used)" % (len(self.open_paths), "" if len(self.open_paths) == 1 else "s")
-        return text
+        parts = []
+        for group, one, many in ((self.outlines, "closed outline", "closed outlines"),
+                                 (self.crossing, "self-crossing path", "self-crossing paths"),
+                                 (self.open_paths, "open path", "open paths")):
+            if group:
+                parts.append("%d %s" % (len(group), one if len(group) == 1 else many))
+        return "%s, %.1f x %.1f mm" % (" + ".join(parts), w, h)
 
 
 def load_design(path):
@@ -95,24 +100,32 @@ def load_design(path):
     raise ImportError_("Unknown file type '%s'. Supported: SVG, DXF (2D outlines) and STL (3D)." % ext)
 
 
+def _path_length(pts):
+    return math.fsum(ct.dist(p, q) for p, q in zip(pts, pts[1:]))
+
+
 def _finish_2d(design, pieces, notes):
     closed, opened = ct.chain_segments(pieces, JOIN_TOL)
-    outlines = []
+    outlines, crossing = [], []
     for c in closed:
         c = ct.simplify(c, 1e-7)
-        if len(c) >= 3 and abs(ct.area(c)) > 1e-6:
+        if len(c) < 3:
+            continue
+        if ct.crosses_itself(c):
+            crossing.append(c)                           # kept as drawn (direction and start)
+        elif abs(ct.area(c)) > 1e-6:
             outlines.append(ct.normalize(c))
     outlines.sort(key=lambda o: -ct.area(o))
-    design.outlines, design.open_paths, design.notes = outlines, opened, list(notes)
-    pts = [p for o in outlines for p in o] or [p for o in opened for p in o]
+    crossing.sort(key=lambda o: -_path_length(o + [o[0]]))
+    opened = [o for o in (ct.dedupe(o, False, 1e-9) for o in opened) if len(o) >= 2 and _path_length(o) >= 1.0]
+    opened.sort(key=lambda o: -_path_length(o))
+    design.outlines, design.crossing, design.open_paths, design.notes = outlines, crossing, opened, list(notes)
+    design.paths = [("outline", o) for o in outlines] + [("crossing", o) for o in crossing] + \
+        [("open", o) for o in opened]
+    pts = [q for _, o in design.paths for q in o]
     if not pts:
         raise ImportError_("No drawing was found in %s (no lines, curves or shapes that can be read)." % design.name)
     design.bounds = ct.bounds(pts)
-    if not outlines:
-        gaps = sorted(ct.dist(o[0], o[-1]) for o in opened)
-        raise ImportError_("%s has no CLOSED outline: %d open path%s (smallest gap between the two ends: %.3f mm).\n\n"
-                           "The print needs a closed outline. Close the shape in the drawing program."
-                           % (design.name, len(opened), "" if len(opened) == 1 else "s", gaps[0]))
     return design
 
 

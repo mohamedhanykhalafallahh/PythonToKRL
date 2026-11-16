@@ -212,8 +212,7 @@ def check_import_formats(tmpdir):
     if len(loops) != 1 or len(loops[0]) != 4 or abs(ct.area(loops[0]) - 9600) > 1e-6:
         bad.append("box_ascii.stl: slice %s" % [len(l) for l in loops])
     # files that cannot be used: a clear message, never a crash
-    cases = {"open.svg": '<svg xmlns="http://www.w3.org/2000/svg"><path d="M 0 0 L 50 0 L 50 50"/></svg>',
-             "empty.svg": '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    cases = {"empty.svg": '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
              "broken.svg": '<svg><path d="M 0 0 L',
              "nothing.dxf": "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
              "text.dxf": "this is not a dxf\nat all\n",
@@ -338,7 +337,7 @@ def check_freeform():
     errs = ff.validate(ff.FreeformParams(**dict(base, design=None)))[0]
     if not errs or "design file" not in errs[0]:
         bad.append("no design file: %s" % errs)
-    for extra in (dict(outline=3), dict(scale=0.0), dict(step=0.0), dict(turns=0), dict(smoothing=5.0),
+    for extra in (dict(outline=4), dict(scale=0.0), dict(step=0.0), dict(turns=0), dict(smoothing=5.0),
                   dict(corner_radius=-1.0)):
         if not ff.validate(ff.FreeformParams(**dict(base, design=d, **extra)))[0]:
             bad.append("validate accepted %s" % extra)
@@ -435,8 +434,18 @@ def check_main_import(tmpdir):
         del msgs[:]
         app.inward_var.set(False)
         app.vars["layers"].set("30")
-        if not app.import_design(design("cone.stl")) or not any("6 layers" in m[1] for m in msgs):
-            bad.append("cone.stl with 30 layers: %s" % msgs)
+        app.shape_vars["import"]["scale"].set("3")
+        if not app.import_design(design("cone.stl")) or msgs:
+            bad.append("an import must not pop up anything: %s" % msgs)
+        if app.vars["layers"].get() != "6" or app.shape_vars["import"]["scale"].get() != "1":
+            bad.append("a new STL must set Layers to the model height (6) and start 1 : 1 (%s, %s)"
+                       % (app.vars["layers"].get(), app.shape_vars["import"]["scale"].get()))
+        app.vars["layers"].set("30")
+        del msgs[:]
+        app.generate()
+        if msgs or not any("6 layers" in w for w in app.warnings) or "to check" not in app.checks_chip.cget("text"):
+            bad.append("more layers than the model: no pop-up, a line behind the checks chip (%s, %s)"
+                       % (msgs, app.warnings))
         out = os.path.join(tmpdir, "IMPORT_CONE.src")
         if not app.export_to(out) or " C_DIS" not in open(out).read() or not open(out).read().endswith("END"):
             bad.append("export of an imported path failed")
@@ -769,4 +778,144 @@ def check_polish(tmpdir):
         except tk.TclError:
             pass
         raise
+    return bad
+
+
+# ---------------------------------------------------------------------- import: as drawn, nothing to fill in
+
+def check_import_auto(tmpdir):
+    import contours as ct
+    import freeform as ff
+    import import_formats as imf
+    import path_model as pm
+    import view3d
+    bad = []
+
+    def write(name, text):
+        path = os.path.join(tmpdir, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+    pts = " ".join("%.4f,%.4f" % (100 + 90 * math.sin(2 * math.pi * k / 400),
+                                  60 + 110 * math.sin(2 * math.pi * k / 400) * math.cos(2 * math.pi * k / 400))
+                   for k in range(400))
+    infinity = write("infinity.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="120mm" '
+                     'viewBox="0 0 200 120"><polygon points="%s"/></svg>' % pts)
+    wave = write("wave.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" '
+                 'viewBox="0 0 200 100"><path d="M 10 50 C 40 0 70 0 100 50 S 160 100 190 50"/></svg>')
+    base = dict(xc=150, yc=225, z0=10, step=2, layer_height=2, turns=3, layers=3)
+    # which kind of path is it?
+    d = imf.load_design(infinity)
+    if [k for k, _ in d.paths] != ["crossing"] or "self-crossing" not in d.describe():
+        bad.append("infinity.svg: %s" % d.describe())
+    dw = imf.load_design(wave)
+    if [k for k, _ in dw.paths] != ["open"]:
+        bad.append("wave.svg: %s" % dw.describe())
+    dc = imf.load_design(design("corners_px.svg"))
+    if [k for k, _ in dc.paths] != ["outline", "outline", "open"]:
+        bad.append("corners_px.svg paths: %s" % [k for k, _ in dc.paths])
+    if ct.crosses_itself([(0, 0), (10, 0), (10, 10), (0, 10)]) or not ct.crosses_itself([(0, 0), (10, 10), (10, 0), (0, 10)]):
+        bad.append("crosses_itself is wrong on a square / a bow tie")
+    # the infinity shape: followed as drawn, every layer on the same curve, smooth, through the crossing twice
+    items, info = ff.generate(ff.FreeformParams(**dict(base, design=d)))
+    start, moves = pm.path_3d(items)
+    box = ct.bounds(d.paths[0][1])
+    src = ff._place(d.paths[0][1], ff.FreeformParams(**dict(base, design=d)), ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
+    far = max(ct.closest_point(src, q[:2])[3] for m in moves for q in m['pts'])
+    zs = [m['pts'][-1][2] for m in moves]
+    dev = max(h['dev'] for h in pm.heading_checks(items))
+    if far > 0.05 or info["max_kink_deg"] > 4 or dev > 2.5 or any(b < a - 1e-9 for a, b in zip(zs, zs[1:])) or \
+            abs(zs[-1] - 14) > 1e-9 or abs(info["length_mm"] - 3 * ct.perimeter(src)) > 2.0:
+        bad.append("infinity: off the drawing by %.3f, corner %.1f, A %.1f, Z end %.1f, length %.0f vs %.0f"
+                   % (far, info["max_kink_deg"], dev, zs[-1], info["length_mm"], 3 * ct.perimeter(src)))
+    if "on top of itself" not in info["warnings"][0] or any("as drawn" in w for w in info["warnings"]):
+        bad.append("infinity: notes %s" % info["warnings"])
+    centre_hits = sum(1 for m in moves if m['layer'] == 0 and
+                      any(math.hypot(q[0] - 150, q[1] - 225) < 2.0 for q in m['pts']))
+    if centre_hits < 2:
+        bad.append("infinity: the path must pass the crossing twice per layer")
+    # the open path: there and back, the way back starts with the climb
+    items, info = ff.generate(ff.FreeformParams(**dict(base, design=dw)))
+    start, moves = pm.path_3d(items)
+    ends = [m['pts'][-1] for m in moves]
+    if abs(start[0] - 60) > 0.01 or abs(ends[-1][0] - 240) > 0.01 or abs(ends[-1][2] - 14) > 1e-9 or \
+            not any("back and forth" in w for w in info["warnings"]):
+        bad.append("open path: start X %.2f, end X %.2f Z %.1f, notes %s" % (start[0], ends[-1][0], ends[-1][2],
+                                                                           info["warnings"]))
+    one, info1 = ff.generate(ff.FreeformParams(**dict(base, design=dw, layers=1)))
+    if info1["max_kink_deg"] > 2 or any("back and forth" in w for w in info1["warnings"]):
+        bad.append("open path, 1 layer: corner %.1f, notes %s" % (info1["max_kink_deg"], info1["warnings"]))
+    # Fill: inward turns E apart until the core is about 40 mm wide
+    dp = imf.load_design(design("plate.dxf"))
+    items, info = ff.generate(ff.FreeformParams(**dict(base, design=dp, fill=True, layers=1, turns=1, step=3)))
+    n = sum(1 for i in items if isinstance(i, pm.Comment) and i.text.startswith("L0 T") and "->" not in i.text)
+    if n != 4 or not any("Fill: 4 inward turns" in w for w in info["warnings"]):
+        bad.append("fill of the 160 x 60 plate: %d turns, notes %s (expected 4: 60 mm wide, 3 mm step, 40 mm core)"
+                   % (n, info["warnings"]))
+    _, moves = pm.path_3d(items)
+    src = ff.layer_outlines(ff.FreeformParams(**dict(base, design=dp)))[0][0]
+    if not all(ff._inside(src, q[:2]) or ct.closest_point(src, q[:2])[3] < 0.05 for m in moves for q in m['pts']):
+        bad.append("fill: the path leaves the outline")
+    # the 3D view leaves out the approach and the lift
+    with_approach = pm.add_approach_retract(items, 30)
+    text = pm.program_to_krl(with_approach)
+    _, all_moves = pm.path_3d(with_approach)
+    if sum(1 for m in all_moves if m['aux']) != 2:
+        bad.append("path_3d must mark the approach and the lift (%d marked)" % sum(1 for m in all_moves if m['aux']))
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        v = view3d.View3D(root, lambda: text)
+        if len(v.moves) != len(all_moves) - 2 or abs(v.bounds[5] - 10.0) > 1e-9 or abs(v.start[2] - 10.0) > 1e-9:
+            bad.append("3D view: approach / lift must be left out (Z up to %.1f, %d moves)" % (v.bounds[5], len(v.moves)))
+    finally:
+        root.destroy()
+    # through the app: choose the file, nothing else; no pop-up; suggestions and the one-click fix
+    msgs = _quiet()
+    asked = []
+    messagebox.askyesno = lambda *a, **k: asked.append(a[1]) or True
+    root, app = _new_main_app()
+    try:
+        if not app.import_design(infinity) or msgs:
+            bad.append("importing the infinity shape: %s" % msgs)
+        if "AS DRAWN" not in app.state()["output"] or not any("on top of itself" in w for w in app.warnings):
+            bad.append("infinity in the app: %s" % app.warnings)
+        if app.more_var.get() or hasattr(app, "x_none"):
+            bad.append("the extra settings must be folded away after an import")
+        if not app.import_design(design("corners_px.svg")) or msgs:
+            bad.append("importing corners_px.svg must not pop up anything: %s" % msgs)
+        w = " | ".join(app.warnings)
+        if "sharp corner" not in w or "Suggestion: round them with a Corner rad. of 20 mm" not in w or "96 px" not in w:
+            bad.append("sharp corners: the checks must give a suggestion and the file note (%s)" % w)
+        if w.count("sharp corner") != 1:
+            bad.append("sharp corners listed more than once: %s" % w)
+        app.show_checks()
+        if len(asked) != 1 or "Round the corners now" not in asked[0]:
+            bad.append("the checks list must offer to round the corners (%s)" % asked)
+        if app.shape_vars["import"]["corner_radius"].get() != "20" or not app.more_var.get() or \
+                any("sharp corner" in x for x in app.warnings) or msgs:
+            bad.append("one-click rounding: radius %r, warnings %s, messages %s"
+                       % (app.shape_vars["import"]["corner_radius"].get(), app.warnings, msgs))
+        # a shape too small for 20 mm takes the next radius that fits
+        app.shape_vars["import"]["outline"].set("2")
+        app.shape_vars["import"]["corner_radius"].set("")
+        app.generate()
+        got = app.round_corners_now()
+        if got not in (15.0, 10.0, 5.0) or app.shape_vars["import"]["corner_radius"].get() != "%g" % got:
+            bad.append("rounding a small shape: %s" % got)
+        # Fill and the folded settings travel with the project
+        app.fill_var.set(True)
+        app.generate()
+        proj = os.path.join(tmpdir, "auto_project.json")
+        app.save_project_to(proj)
+        out = app.state()["output"]
+        app.fill_var.set(False)
+        app.show_more(False)
+        app.clear()
+        del msgs[:]
+        if not app.open_project_from(proj) or app.state()["output"] != out or not app.fill_var.get() or \
+                not app.more_var.get() or any("differs" in m[1] for m in msgs):
+            bad.append("project with Fill and extra settings did not come back (%s)" % msgs)
+    finally:
+        root.destroy()
     return bad
