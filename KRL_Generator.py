@@ -232,6 +232,11 @@ HELP_GENERAL = (
     "  hand-made base is offered to the manual editor).\n"
     "- A base built point by point: Tools > Manual 11-point editor (advanced).\n"
     "- Any other shape: draw it in a CAD or drawing program and use Import (SVG, DXF or STL).\n"
+    "- Export as spline motion (off by default, NOT tried on the robot yet): the exported\n"
+    "  file uses a SPLINE block (SLIN for straights, SPL points along the curves) instead of\n"
+    "  LIN / CIRC with C_DIS. The robot then keeps the programmed speed through the curves and\n"
+    "  passes exactly through the points. The text box still shows LIN / CIRC. Needs KSS 8.2\n"
+    "  or newer. Run it without fiber first.\n"
     "- Approach from above: the robot first goes above the start, comes straight down, and\n"
     "  lifts straight up at the end (those two points are exact stops, not blended).\n"
     "- The top view shows the bed plate (dashed). The 'checks' chip lists what to look at\n"
@@ -369,6 +374,7 @@ class MainApp:
         self.c_dis_var = tk.BooleanVar(value=True)
         self.inward_var = tk.BooleanVar(value=False)     # import: turns grow inward
         self.fill_var = tk.BooleanVar(value=False)       # import: inward turns until the shape is full
+        self.spline_var = tk.BooleanVar(value=False)     # export as spline blocks (SLIN / SPL), experimental
         self.more_var = tk.BooleanVar(value=False)       # import panel: the extra settings are shown
         self._notes = ("", [])                           # (program text, notes of the generator for it)
         self.approach_var = tk.BooleanVar(value=True)    # approach from above + lift at the end
@@ -524,6 +530,9 @@ class MainApp:
                         style="Check.TCheckbutton", cursor="hand2").pack(side=tk.LEFT, padx=(14, 0))
         ap = ttk.Frame(card, style="In.TFrame")
         ap.grid(row=6, column=0, columnspan=4, sticky="w")
+        ttk.Checkbutton(card, text=" Export as spline motion (SPLINE block, not tried on the robot yet)",
+                        variable=self.spline_var, style="Check.TCheckbutton", cursor="hand2",
+                        command=self._update_info).grid(row=7, column=0, columnspan=4, sticky="w")
         ttk.Checkbutton(ap, text=" Approach from above and lift at the end,", variable=self.approach_var,
                         style="Check.TCheckbutton", cursor="hand2").pack(side=tk.LEFT)
         ttk.Entry(ap, textvariable=self.lift_var, width=4, style="Field.TEntry").pack(side=tk.LEFT, padx=(5, 4))
@@ -781,7 +790,7 @@ class MainApp:
                        **{s: {k: v.get() for k, v in fs.items()} for s, fs in self.shape_vars.items()}},
             "options": {"auto_orient": self.auto_orient_var.get(), "helix": self.helix_var.get(),
                         "c_dis": self.c_dis_var.get(), "inward": self.inward_var.get(),
-                        "fill": self.fill_var.get(),
+                        "fill": self.fill_var.get(), "spline": self.spline_var.get(),
                         "approach": self.approach_var.get(), "lift": self.lift_var.get()},
             "output": self.output_text.get("1.0", "end-1c"),
         }
@@ -805,6 +814,7 @@ class MainApp:
         self.c_dis_var.set(bool(opts.get("c_dis", True)))
         self.inward_var.set(bool(opts.get("inward", False)))
         self.fill_var.set(bool(opts.get("fill", False)))
+        self.spline_var.set(bool(opts.get("spline", False)))
         imp = inputs.get("import", {})                  # non-standard extra settings: show them
         self.more_var.set(any(str(imp.get(k, d)).strip() not in (d, d + ".0") for k, d in
                               (("scale", "1"), ("rotation", "0"), ("corner_radius", ""), ("outline", "1"),
@@ -1048,8 +1058,10 @@ class MainApp:
         items = pm.parse_krl(self.body_text())
         start, moves = pm.path_3d(items)
         settings = krl_export.active_settings()[0]
-        self.info.config(text=("as exported: %d decimals" % settings.decimals) if settings.decimals is not None
-                         else "as exported: full precision")
+        # (kept as short as the normal text: a longer line makes the whole window wider)
+        lead = "SPLINE export: " if self.spline_var.get() else "as exported: "
+        self.info.config(text=lead + (("%d decimals" % settings.decimals) if settings.decimals is not None
+                                      else "full precision"))
         self._update_legend(moves)
         is_import = self.shape_var.get() == "import"
         self.warnings = path_warnings(items, tips=is_import)
@@ -1361,7 +1373,8 @@ class MainApp:
         settings, profile_error = krl_export.active_settings()
         if profile_error:
             messagebox.showwarning("Export Settings", profile_error)
-        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
+        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get(),
+                                        spline=self.spline_var.get())
         try:
             with open(path, "w") as f:
                 f.write(code)
@@ -1477,7 +1490,8 @@ class MainApp:
         settings, profile_error = krl_export.active_settings()
         if profile_error:
             messagebox.showwarning("Export Settings", profile_error, parent=parent)
-        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get())
+        code = krl_export.build_program(name, self.body_text(), settings, approximate=self.c_dis_var.get(),
+                                        spline=self.spline_var.get())
         self.root.configure(cursor="watch")
         self.root.update_idletasks()
         try:

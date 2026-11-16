@@ -919,3 +919,131 @@ def check_import_auto(tmpdir):
     finally:
         root.destroy()
     return bad
+
+
+# ---------------------------------------------------------------------- spline export (optional)
+
+def check_spline(tmpdir):
+    import re
+    import cuboid
+    import cylinder
+    import freeform as ff
+    import import_formats as imf
+    import krl_export
+    import path_model as pm
+    bad = []
+
+    def seg_dist(q, a, b):
+        d = [b[i] - a[i] for i in range(3)]
+        l2 = sum(x * x for x in d)
+        t = 0.0 if l2 == 0 else max(0.0, min(1.0, sum((q[i] - a[i]) * d[i] for i in range(3)) / l2))
+        return math.sqrt(sum((q[i] - a[i] - t * d[i]) ** 2 for i in range(3)))
+
+    def study(label, items, want_slin):
+        body = pm.program_to_krl(items) + "\n"
+        out = krl_export.to_spline(body, 3)
+        lines = out.split("\n")
+        if lines.count("SPLINE") != 1 or lines.count("ENDSPLINE") != 1 or "C_DIS" in out or \
+                lines.index("SPLINE") > lines.index("ENDSPLINE"):
+            bad.append("%s: one SPLINE ... ENDSPLINE block expected" % label)
+        inside = lines[lines.index("SPLINE") + 1:lines.index("ENDSPLINE")]
+        if any(not (l.startswith("  SPL {") or l.startswith("  SLIN {") or l.strip().startswith(";") or not l.strip())
+               for l in inside):
+            bad.append("%s: only SPL / SLIN / comments may be inside the block" % label)
+        if any(re.match(r"\s*(LIN|CIRC|SCIRC)\b", l) for l in inside):
+            bad.append("%s: LIN / CIRC left inside the block" % label)
+        n_slin = sum(l.startswith("  SLIN") for l in lines)
+        if (n_slin > 0) != want_slin:
+            bad.append("%s: %d SLIN" % (label, n_slin))
+        # every point is ON the path, in the order of the path, and the last one is its end
+        _, moves = pm.path_3d(items)
+        poly = [q for m in moves if not m['aux'] for q in m['pts']]
+        pts = []
+        for l in inside:
+            m = re.match(r"\s*(SPL|SLIN) \{X ([-\d.]+), Y ([-\d.]+), Z ([-\d.]+), A ([-\d.]+)", l)
+            if m:
+                pts.append(tuple(float(m.group(i)) for i in (2, 3, 4, 5)))
+        worst = max(min(seg_dist(q, a, b) for a, b in zip(poly, poly[1:])) for q in pts[::3])
+        if worst > 0.1:                                   # the comparison path is drawn in 5 deg steps (sag 0.06 mm)
+            bad.append("%s: a spline point is %.3f mm off the path" % (label, worst))
+        end = poly[-1]
+        if math.sqrt(sum((pts[-1][i] - end[i]) ** 2 for i in range(3))) > 0.001:
+            bad.append("%s: the block must end on the last point of the print" % label)
+        steps = [math.sqrt(sum((b[i] - a[i]) ** 2 for i in range(3))) for a, b in zip(pts, pts[1:])]
+        n_spl = sum(l.startswith("  SPL") for l in lines)
+        if n_spl < sum(isinstance(i, pm.Circ) for i in items):
+            bad.append("%s: every arc needs at least one SPL point" % label)
+        turn = max(abs(pm.angle_diff(a[3], b[3])) for a, b in zip(pts, pts[1:]))
+        if turn > 46:
+            bad.append("%s: A jumps by %.0f deg between two spline points" % (label, turn))
+        return out
+
+    items, _ = cuboid.generate(cuboid.CuboidParams(length=150, width=300, corner_radius=None, xc=150, yc=225, z0=10,
+                                                   step=2, layer_height=2, turns=3, layers=3, a=180, b=-3, c=180))
+    out = study("cuboid", items, True)
+    lines = out.split("\n")
+    k = lines.index("SPLINE")
+    want = ["  SLIN {X 97.5, Y 375.0, Z 10.0, A 180.0, B -3.0, C 180.0}",
+            "  SPL {X 91.677, Y 374.233, Z 10.0, A -165.0, B -3.0, C 180.0}"]
+    if lines[k + 1:k + 3] != want or not lines[k - 1].startswith("; Spline motion"):
+        bad.append("cuboid spline start: %s" % lines[k - 1:k + 3])
+    # quarter arc of radius 22.5: 6 points 15 deg apart, on the circle, A turning 15 deg each
+    arc = [l for l in lines[k + 2:k + 8]]
+    if len([l for l in arc if l.startswith("  SPL")]) != 6 or "A -90.0" not in arc[-1]:
+        bad.append("cuboid corner as spline points: %s" % arc)
+    with_ap = pm.add_approach_retract(items, 30)
+    out = study("cuboid + approach", with_ap, True)
+    lines = out.split("\n")
+    if not any(l.startswith("LIN ") and l.endswith("; exact stop") for l in lines[:lines.index("SPLINE")]) or \
+            not lines[lines.index("ENDSPLINE") + 2].startswith("LIN ") or "Z 44.0" not in lines[lines.index("ENDSPLINE") + 2]:
+        bad.append("approach and lift must stay plain LIN outside the block")
+    items, _ = cylinder.generate(cylinder.CylinderParams(xc=150, yc=225, z0=10, inner_diameter=100, step=2,
+                                                         layer_height=2, turns=3, layers=3, b=-3))
+    study("cylinder", items, False)
+    d = imf.load_design(design("blob.svg"))
+    items, _ = ff.generate(ff.FreeformParams(design=d, xc=150, yc=225, z0=10, step=2, layer_height=2, turns=2, layers=2))
+    study("blob.svg", items, False)
+    # straights meeting at a small angle are pieces of a curve (SPL); a real corner keeps its SLINs
+    def poly_items(pts):
+        return [pm.Ptp(pm.pose(pts[0], (0, 0, 180)))] + [pm.Lin(pm.pose(q, (0, 0, 180))) for q in pts[1:]]
+    gentle = krl_export.to_spline(pm.program_to_krl(poly_items([(0, 0, 0), (50, 0, 0), (100, 4, 0), (150, 12, 0)])))
+    corner = krl_export.to_spline(pm.program_to_krl(poly_items([(0, 0, 0), (50, 0, 0), (50, 50, 0), (0, 50, 0)])))
+    if "  SLIN" in gentle or corner.count("  SLIN") != 3 or "  SPL" in corner:
+        bad.append("SLIN / SPL choice at small angles and at corners:\n%s\n%s" % (gentle, corner))
+    hand = "PTP {X 0.0, Y 0.0, Z 0.0}\nLIN {X 50.0, Y 0.0, Z 0.0}\n$OUT[1] = TRUE\nLIN {X 50.0, Y 50.0, Z 0.0}\n"
+    got = krl_export.to_spline(hand).split("\n")
+    if got.count("SPLINE") != 2 or got.count("ENDSPLINE") != 2 or got[got.index("$OUT[1] = TRUE") - 1] != "ENDSPLINE":
+        bad.append("a hand-written statement must close the block before it: %s" % got)
+    if krl_export.to_spline("; nothing here\n") != "; nothing here\n":
+        bad.append("a text without moves must stay as it is")
+    # through the app: off by default (same file as before), on = spline file, remembered in the project
+    msgs = _quiet()
+    root, app = _new_main_app()
+    try:
+        app.generate()
+        plain = os.path.join(tmpdir, "SPL_OFF.src")
+        app.export_to(plain)
+        if app.spline_var.get() or "SPLINE" in open(plain).read() or " C_DIS" not in open(plain).read():
+            bad.append("spline export must be off by default")
+        app.spline_var.set(True)
+        app._update_info()
+        if "SPLINE" not in app.info.cget("text"):
+            bad.append("the info line must say that the export is written as SPLINE")
+        on = os.path.join(tmpdir, "SPL_ON.src")
+        app.export_to(on)
+        code = open(on).read()
+        if code.count("\nSPLINE\n") != 1 or "C_DIS" in code.split("$ACC_AXIS[6]=100")[1] or \
+                not code.endswith("END") or code.rstrip()[:-3].rstrip().split("\n")[-1] != "ENDSPLINE" or \
+                not code.startswith("&ACCESS"):
+            bad.append("spline export through the app: wrong file")
+        if app.state()["output"].count("SPLINE"):
+            bad.append("the text box must keep showing LIN / CIRC")
+        proj = os.path.join(tmpdir, "spline_project.json")
+        app.save_project_to(proj)
+        app.spline_var.set(False)
+        app.open_project_from(proj)
+        if not app.spline_var.get():
+            bad.append("the spline option must come back with the project")
+    finally:
+        root.destroy()
+    return bad

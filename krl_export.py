@@ -18,6 +18,7 @@ If the file is missing, the built-in NOUVTETE profile is used.
 No tkinter in this module, so it can be tested and reused on its own.
 """
 import json
+import math
 import os
 import re
 import sys
@@ -278,12 +279,147 @@ def build_header(name, settings=DEFAULT_SETTINGS):
     return "\n".join(lines) + "\n"
 
 
-def build_program(name, body, settings=DEFAULT_SETTINGS, approximate=True):
+# ---------------------------------------------------------------- spline motion (optional)
+
+SPLINE_ARC_STEP = 15.0     # deg: an arc becomes SPL points at most this far apart ...
+SPLINE_MAX_STEP = 25.0     # mm:  ... and at most this far apart along the arc
+SPLINE_MIN_SLIN = 10.0     # mm:  a straight at least this long stays an exact straight (SLIN)
+SPLINE_SMOOTH = (0.5, 15.0)   # deg: two straights meeting between these angles are part of a curve (SPL)
+SPLINE_NOTE = "Spline motion: SLIN = exact straights, SPL = points on the curves (KSS 8.2 or newer)"
+
+
+def to_spline(body, decimals=None):
+    """The same path written as KUKA spline blocks instead of LIN / CIRC with C_DIS.
+
+        SPLINE
+          SLIN {...}        a straight
+          SPL {...}         a point the curve passes through
+        ENDSPLINE
+
+    Why: inside a spline block the controller plans ONE smooth path through all points and keeps
+    the programmed speed along it; nothing is rounded off as C_DIS does. KUKA's rule for it is
+    followed here: straights are SLIN, everything curved is a row of SPL points. (Chains of SLIN
+    and SCIRC would be exact too, but the robot slows down or stops at every joint between them,
+    so arcs are written as SPL points ON the arc, at most 15 deg and 25 mm apart, with A, B, C
+    going evenly from the start to the end of the arc.)
+
+      - a LIN stays a straight (SLIN) if it is 10 mm or longer and does not meet another LIN at a
+        small angle (0.5 .. 15 deg: then both are pieces of a curve and become SPL points); a
+        real corner (above 15 deg) keeps its two SLIN, and the robot stops in the corner.
+      - PTP lines, the approach from above and the lift at the end stay as they are; the block
+        ends on the last point of the print (an exact stop).
+      - comments stay where they are; any other line ends the block before it.
+
+    NOT TRIED ON THE ROBOT. Run a new program without fiber first."""
+    items = pm.parse_krl(body)
+    # the moves, with where they start and their directions, to decide SLIN or SPL
+    moves, pos = {}, None
+    order = []
+    for k, item in enumerate(items):
+        if isinstance(item, pm.Ptp):
+            pos = item.target
+        elif isinstance(item, (pm.Lin, pm.Circ)) and pos is not None:
+            t = pm.move_tangents(pos.xyz, item)
+            moves[k] = (pos, t)
+            order.append(k)
+            pos = item.target
+    aux = set()                                           # approach / lift LINs: left as plain LIN
+    mark = False
+    for k, item in enumerate(items):
+        if isinstance(item, pm.Comment) and ("APPROACH:" in item.text or "RETRACT:" in item.text):
+            mark = True
+        elif isinstance(item, pm.Lin) and mark:
+            aux.add(k)
+            mark = False
+
+    def kink(k_a, k_b):
+        """Angle (deg) between the end of move k_a and the start of move k_b."""
+        ta, tb = moves[k_a][1], moves[k_b][1]
+        if not ta or not tb:
+            return 0.0
+        a, b = ta[1], tb[0]
+        cr = (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+        return math.degrees(math.atan2(math.sqrt(sum(c * c for c in cr)), sum(x * y for x, y in zip(a, b))))
+
+    def is_straight(k):
+        start, item = moves[k][0], items[k]
+        if math.sqrt(sum((p - q) ** 2 for p, q in zip(start.xyz, item.target.xyz))) < SPLINE_MIN_SLIN:
+            return False
+        i = order.index(k)
+        for other, first in ((order[i - 1] if i > 0 else None, True), (order[i + 1] if i + 1 < len(order) else None, False)):
+            if other is None or other in aux or not isinstance(items[other], pm.Lin):
+                continue
+            ang = kink(other, k) if first else kink(k, other)
+            if SPLINE_SMOOTH[0] < ang < SPLINE_SMOOTH[1]:
+                return False
+        return True
+
+    def lerp_pose(a, b, f, xyz):
+        def mix(u, v, angle=False):
+            if u is None or v is None:
+                return v
+            return u + (pm.angle_diff(u, v) if angle else (v - u)) * f
+        ang = mix(a.a, b.a, True)
+        if ang is not None:
+            ang = (ang + 180.0) % 360.0 - 180.0
+        return pm.Pose(xyz[0], xyz[1], xyz[2], ang, mix(a.b, b.b, True), mix(a.c, b.c, True))
+
+    out, in_block, noted = [], False, False
+
+    def close():
+        if out and in_block:
+            out.append("ENDSPLINE")
+        return False
+    for k, item in enumerate(items):
+        if k in moves and k not in aux:
+            start = moves[k][0]
+            if not in_block:
+                if not noted:
+                    out.append("; " + SPLINE_NOTE)
+                    noted = True
+                out.append("SPLINE")
+                in_block = True
+            end = pm.Pose(item.target.x, item.target.y, item.target.z, item.target.a, item.target.b, item.target.c)
+            if isinstance(item, pm.Lin):
+                out.append("  %s %s" % ("SLIN" if is_straight(k) else "SPL", end.to_krl(decimals)))
+            else:
+                fr = pm._arc_frame(start.xyz, item.via.xyz, item.target.xyz)
+                if fr is None:                            # three points on a line: a straight
+                    out.append("  SPL %s" % end.to_krl(decimals))
+                else:
+                    c, rad, e1, e2, sweep = fr
+                    n = max(1, int(math.ceil(abs(math.degrees(sweep)) / SPLINE_ARC_STEP - 1e-9)),
+                            int(math.ceil(rad * abs(sweep) / SPLINE_MAX_STEP - 1e-9)))
+                    for j in range(1, n + 1):
+                        t = sweep * j / n
+                        xyz = tuple(c[i] + rad * (e1[i] * math.cos(t) + e2[i] * math.sin(t)) for i in range(3))
+                        pose_j = end if j == n else lerp_pose(start, end, j / float(n), xyz)
+                        out.append("  SPL %s" % pose_j.to_krl(decimals))
+            if (item.note or "").strip().lower() == "exact stop":
+                in_block = close()
+            continue
+        line = item.to_krl(decimals)
+        if in_block and not (isinstance(item, pm.Comment) or line.strip() == "" or line.lstrip().startswith(";")):
+            in_block = close()                            # PTP, the lift, or a hand-written statement
+        out.append(("  " + line) if in_block and line.strip() else line)
+    if in_block:                                          # close before trailing blank lines
+        tail = []
+        while out and out[-1].strip() == "":
+            tail.append(out.pop())
+        out.append("ENDSPLINE")
+        out.extend(tail)
+    return "\n".join(out)
+
+
+def build_program(name, body, settings=DEFAULT_SETTINGS, approximate=True, spline=False):
     """Complete .src text: header + motion body (+ C_DIS if approximate) + END.
 
-    `body` is the generated motion text (PTP/LIN/CIRC lines and ';' comments)."""
+    `body` is the generated motion text (PTP/LIN/CIRC lines and ';' comments). With `spline`
+    the moves are written as spline blocks (to_spline) and C_DIS is not used."""
     if not is_valid_program_name(name):
         raise ValueError("'{}' is not a valid KRL program name. {}".format(name, PROGRAM_NAME_RULE))
+    if spline:
+        return build_header(name, settings) + to_spline(body, settings.decimals) + "END"
     if settings.decimals is not None:
         # re-write the motion lines rounded (comments and other lines stay as they are)
         body = pm.program_to_krl(pm.parse_krl(body), decimals=settings.decimals)
@@ -293,6 +429,6 @@ def build_program(name, body, settings=DEFAULT_SETTINGS, approximate=True):
 
 
 __all__ = ["ExportSettings", "NOUVTETE", "DEFAULT_SETTINGS", "PROGRAM_NAME_RULE", "PROFILES_PATH",
-           "is_valid_program_name", "add_c_dis", "build_header", "build_program",
+           "is_valid_program_name", "add_c_dis", "to_spline", "build_header", "build_program",
            "settings_to_dict", "settings_from_dict", "builtin_profiles", "load_profiles",
            "save_profiles", "active_settings"]

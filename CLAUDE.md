@@ -188,6 +188,20 @@ The owner asked for a way without a cable across the lab (2026-11-16). Nothing i
 
 Later options for a fully automatic transfer, each needs something installed on the controller and a lab test: KUKA DirectoryLoader (option; pulls `.src` files from a network path into the program folder), C3 Bridge Interface (open-source server, same port 7000 as KukaVarProxy; can write program files), WorkVisual (official, deploys whole projects). `robot_link.send_program` is the one place to add such a transport.
 
+## Spline export (optional, 2026-11-16; NOT tried on the robot)
+The owner asked whether KUKA's spline motion would help the free-form work. Answer given: it does not make the generation easier (the path is found the same way), but it can make the ROBOT follow curves better, so it is an export option, off by default: check box "Export as spline motion", `options.spline`, `krl_export.build_program(..., spline=True)` → `krl_export.to_spline(body, decimals)`. The text box and the views keep showing LIN / CIRC; only the exported / sent file changes (the info line says so).
+
+What a spline block is (KSS 8.2 and newer, so every KR C4): `SPLINE` ... `ENDSPLINE` with segments `SPL` (a point the curve passes through), `SLIN` (exact straight) and `SCIRC` (exact arc). The controller plans one path through all points and keeps the programmed speed along it; nothing is rounded off as with C_DIS, and `$APO.CDIS` plays no role inside.
+
+How the moves are converted (the reasons matter, keep them):
+- A chain of SLIN / SCIRC segments is exact, but the robot slows down or stops at the joints between them (KUKA's own advice: use SPL for curves, SLIN / SCIRC only where needed). A 1 : 1 LIN → SLIN, CIRC → SCIRC conversion would therefore be worse than today's C_DIS for printing.
+- So: every CIRC becomes SPL points ON the arc, at most 15 deg and 25 mm apart, A / B / C going evenly from the arc's start to its end (`SPLINE_ARC_STEP`, `SPLINE_MAX_STEP`).
+- A LIN stays an exact straight (SLIN) if it is at least 10 mm long and does not meet another LIN at 0.5 to 15 deg; LINs meeting at such a small angle are pieces of a curve and become SPL points. A real corner (above 15 deg) keeps its SLINs: the robot stops in the corner, as it has to.
+- PTP, the approach LIN (`; exact stop`) and the lift stay plain moves outside the block; the block ends on the last point of the print. Comments stay inside; any other hand-written statement closes the block before it and a new one opens after it.
+- The whole print is ONE block. Unknown and to be found on the robot: whether a long program (hundreds to thousands of points) is accepted and how long the controller plans before it starts; web sources give 1000 and 4096 points as limits and disagree. If a limit shows up: split per layer and join the blocks with approximation (`ENDSPLINE C_SPL` in KSS 8.3+, `C_DIS` in 8.2; the KSS version is still unknown).
+- Also unknown: how the controller shapes the curve between SPL points near the SLIN ends (it could bulge slightly). The preview cannot show that. Dry run first, compare with the same print exported the normal way.
+- Speed: inside a spline `$VEL.CP` is really held, so `BAS(#VEL_CP, 2)` = 2 m/s matters even more; the speed still comes from the override (speed in mm/s is the open polish item 1).
+
 ## Polish list (proposed 2026-11-16; the owner said: build them, but skip item 1 for now)
 Safety / robot level first:
 1. [skipped by the owner for now] **Print speed in mm/s** in the export profile (`$VEL.CP`), instead of `BAS(#VEL_CP, 2)` = 2 m/s plus the override. A forgotten override runs at up to 200x the intended speed. (Deferred by the owner on 2026-11-04; raised again.)
@@ -475,3 +489,4 @@ Minor:
   - Network without a cable: see the Send to Robot section (guide text changed, nothing else).
   - Verified: regression ALL IDENTICAL with Python 3.7 and 3.13 (goldens unchanged, new check `check_import_auto`), exe rebuilt with self-test OK, screenshots of the 3D view and of the infinity import.
   - Committed after the owner's OK.
+- 2026-11-16 (home, fourth session): third-session work committed and pushed (980ce92). Spline export added as an option (see "Spline export"); new check `check_spline`; window height 739 (cuboid) / 733 (Import). Regression ALL IDENTICAL with 3.7 and 3.13 (the default export is unchanged), exe rebuilt. The spline option was committed as EXPERIMENTAL after the owner looked at an export; it needs a dry run on the robot before it is trusted. Sizes seen: cuboid 36 SLIN + 228 SPL; the STL part `MHKPart1` about 6800 points in one block, above the 1000 / 4096 limits some sources name, so splitting per layer may be needed. The info line text is kept short ("SPLINE export: 3 decimals"): a longer text widened the whole window.

@@ -1199,7 +1199,9 @@ def main():
                              ("approach / retract, checks, comma, save, click to find a line",
                               lambda: checks_import.check_polish(tmpdir)),
                              ("import as drawn: infinity, open path, fill, no pop-ups, suggestions",
-                              lambda: checks_import.check_import_auto(tmpdir))):
+                              lambda: checks_import.check_import_auto(tmpdir)),
+                             ("spline export (SPLINE block: SLIN straights, SPL points on curves)",
+                              lambda: checks_import.check_spline(tmpdir))):
             problems = check()
             if problems:
                 failed += len(problems)
