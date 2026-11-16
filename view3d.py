@@ -456,10 +456,27 @@ class View3D:
             wide = max(3.0, min(60.0, 90.0 * s))
             segs = [(pts[0], pts[1], ROBOT_JOINT, 1.5 * wide), (pts[1], pts[2], ROBOT_ARM, 1.25 * wide),
                     (pts[2], pts[3], ROBOT_ARM, wide), (pts[3], pts[4], ROBOT_ARM, 0.9 * wide),
-                    (pts[4], pts[5], ROBOT_ARM, 0.8 * wide), (pts[5], pts[6], ROBOT_JOINT, 0.55 * wide),
-                    (pts[6], tcp, ROBOT_TOOL, 0.3 * wide)]
+                    (pts[4], pts[5], ROBOT_ARM, 0.8 * wide), (pts[5], pts[6], ROBOT_JOINT, 0.55 * wide)]
             mid = lambda a, b: ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
-            for a, b, col, w in sorted(segs, key=lambda sg: depth(mid(sg[0], sg[1]))):
+            # everything is drawn back to front: the arm's links and the faces of the head's boxes
+            parts = [(depth(mid(a, b)), None, (a, b, col, w)) for a, b, col, w in segs]
+            boxes = rep.head.boxes if rep.head else ()
+            if not boxes:                            # no head shape: a line from the flange to the TCP
+                parts.append((depth(mid(pts[6], tcp)), None, (pts[6], tcp, ROBOT_TOOL, 0.3 * wide)))
+            tool_world = rm.frame_mul(rm.forward(rep.robot, q), rep.tool)
+            edge = ROBOT_BAD if pose.get('hit') else P["canvas"]
+            for box in boxes:
+                corners = [rm.frame_point(tool_world, p) for p in rm.box_corners(box)]
+                for n_face, face in enumerate(rm.BOX_FACES):
+                    quad = [corners[i] for i in face]
+                    centre = tuple(sum(p[j] for p in quad) / 4.0 for j in range(3))
+                    shade = ui_images.mix(box[1], "#000000", (0.0, 0.0, 0.14, 0.14, 0.28, 0.28)[n_face])
+                    parts.append((depth(centre), quad, shade))
+            for _d, quad, what in sorted(parts, key=lambda part: part[0]):
+                if quad is not None:
+                    c.create_polygon(*[v for p in quad for v in scr(p)], fill=what, outline=edge, tags=("robot",))
+                    continue
+                a, b, col, w = what
                 c.create_line(*scr(a), *scr(b), fill=col, width=w, capstyle=tk.ROUND, tags=("robot",))
                 if col == ROBOT_ARM:                 # the axis at the start of this link
                     x, y = scr(a)
@@ -467,7 +484,8 @@ class View3D:
                     c.create_oval(x - r, y - r, x + r, y + r, fill=ROBOT_JOINT, outline="", tags=("robot",))
             x, y = scr(tcp)
             c.create_oval(x - 4, y - 4, x + 4, y + 4, fill=P["accent"], outline=P["canvas"], tags=("robot",))
-            line = ("Position %d of %d (program line %d):   " % (k + 1, n, pose['item'] + 1)
+            line = ("Position %d of %d (program line %d):   %s" % (k + 1, n, pose['item'] + 1,
+                                                                   "COLLISION HERE   " if pose.get('hit') else "")
                     + "   ".join("A%d %.1f°" % (j + 1, v) for j, v in enumerate(q)))
         elif pose is not None:
             x, y = scr(pose['world'])
@@ -478,10 +496,10 @@ class View3D:
             line = ("Position %d of %d (program line %d):   OUT OF REACH (X %.0f, Y %.0f, Z %.0f)"
                     % ((k + 1, n, pose['item'] + 1) + tuple(pose['xyz'])))
         found = ("   |   ⚠ " + "  ⚠ ".join(rep.messages)) if rep.messages \
-            else "   |   ✓ reach, axis limits and singularities OK"
+            else "   |   ✓ reach, axis limits, singularities and collisions OK"
         text = (line + "\n" + rep.summary() + found + "\n"
-                "Robot from the data sheet, true scale; collisions are not checked.   |   Left / Right: one step   |   "
-                "Space: play / stop   |   1x = %g mm/s" % PLAY_SPEED)
+                "Robot from the data sheet, head: %s, true scale.   |   Left / Right: one step   |   "
+                "Space: play / stop   |   1x = %g mm/s" % (rep.head.name if rep.head else "none", PLAY_SPEED))
         self._set_info(max(W - 12, 200), text)
 
     def _set_info(self, wrap, text):

@@ -63,6 +63,8 @@ class FreeformParams:
     inward: bool = False                 # turns grow inward instead of outward
     smoothing: Optional[float] = None    # mm: how closely LIN / CIRC follow the points (None = automatic)
     fill: bool = False                   # inward turns until the shape is full (Turns is not used)
+    seam: Optional[tuple] = None         # (x, y) on the bed: every loop starts at the outline's point nearest
+                                         # to it (None = automatic: on the longest straight part)
 
 
 def normalize_angle(angle):
@@ -385,7 +387,7 @@ def generate(p):
     tol = p.smoothing if p.smoothing is not None else (SMOOTH_3D if p.design.kind == "3d" else ct.FIT_TOL)
     entries = []                                        # ('comment', text) or a move from _fit3
     first = seq[0][2]
-    seam = _first_seam(first, _transition_length(p.step, ct.perimeter(first)))
+    seam = p.seam or _first_seam(first, _transition_length(p.step, ct.perimeter(first)))
     start = None
     for k, (layer, t, poly, z) in enumerate(seq):
         if k == 0 or seq[k - 1][0] != layer:
@@ -440,7 +442,7 @@ def _generate_trace(p, kind, src):
                      "height there in every layer).")
         length = ct.perimeter(pts)
         D = _transition_length(p.step, length, p.layer_height)
-        loop = ct.reseam(pts, _first_seam(pts, D))
+        loop = ct.reseam(pts, p.seam or _first_seam(pts, D))
         path = loop + [loop[0]]
         start = (path[0][0], path[0][1], z_of(0))
         for layer in range(p.layers):

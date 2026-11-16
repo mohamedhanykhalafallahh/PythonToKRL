@@ -1206,7 +1206,9 @@ def main():
                              ("robot arm model (kinematics, Status / Turn, reach, limits, singularity)",
                               checks_robot.check_robot_model),
                              ("robot in the checks chip and in the 3D view (slider, Play)",
-                              lambda: checks_robot.check_robot_view(_new_main_app))):
+                              lambda: checks_robot.check_robot_view(_new_main_app)),
+                             ("robot / head choice, collision warning, Import start point and outline by clicking",
+                              lambda: checks_robot.check_head_and_picking(_new_main_app))):
             problems = check()
             if problems:
                 failed += len(problems)

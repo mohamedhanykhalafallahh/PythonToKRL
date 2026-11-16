@@ -22,6 +22,7 @@ THE MODEL IS FROM THE DATA SHEET, NOT MEASURED ON THE ROBOT. One reading of the 
 (axis angles and the Cartesian position at the same pose) is enough to confirm it: see
 `pose_of` at the end of this file.
 """
+import json
 import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -132,8 +133,99 @@ KR6_R900 = Robot("KR 6 R900 sixx", 400.0, 25.0, 455.0, 35.0, 420.0, 80.0, _AGILU
 KR6_R700 = Robot("KR 6 R700 sixx", 400.0, 25.0, 315.0, 35.0, 365.0, 80.0, _AGILUS_LIMITS)
 KR10_R1100 = Robot("KR 10 R1100 sixx", 400.0, 25.0, 560.0, 35.0, 515.0, 80.0, _AGILUS_LIMITS)
 
-ROBOTS = {r.name: r for r in (KR6_R900, KR6_R700, KR10_R1100)}
+KR10_R900 = Robot("KR 10 R900 sixx", 400.0, 25.0, 455.0, 35.0, 420.0, 80.0, _AGILUS_LIMITS)
+
+ROBOTS = {r.name: r for r in (KR6_R900, KR10_R900, KR6_R700, KR10_R1100)}
 DEFAULT_ROBOT = KR6_R900
+
+# Thickness of the arm for the collision warning (radius in mm around the line between two axes).
+# Rough values for the KR AGILUS; they only have to be about right.
+ARM_RADIUS = {"column": 100.0, "upper": 70.0, "forearm": 55.0, "wrist": 50.0}
+
+
+# ---------------------------------------------------------------- the print head (simple shape)
+
+@dataclass(frozen=True)
+class Head:
+    """The print head as a few boxes, for the 3D view and the collision warning.
+    A box is (label, colour, (x0, x1), (y0, y1), (z0, z1), touches) in the TOOL frame of the
+    program: origin = TCP (roller contact point), +X = the travel direction (where A points),
+    +Z = down into the bed, so everything above the bed has a negative Z. `touches` marks the
+    part that is meant to touch the bed (the roller): it is never reported."""
+    name: str
+    boxes: tuple = ()
+    note: str = ""
+
+
+# NouvTete: ESTIMATED from photos (2026-11-16), not measured. The flange centre is at
+# X -13.9, Y 3.2, Z -186.1 in this frame (from TOOL_DATA[3]). The UV lamp trails the roller.
+# Which side the funnel / spool is on (+Y or -Y) is a guess.
+NOUVTETE_HEAD = Head("NouvTete (estimated shape)", (
+    ("roller", "#3a3d42", (-15.0, 15.0), (-12.0, 12.0), (-30.0, 0.0), True),
+    ("UV lamp", "#7c5cff", (-75.0, -25.0), (-20.0, 20.0), (-60.0, -8.0), False),
+    ("head body", "#8a8f98", (-45.0, 20.0), (-30.0, 35.0), (-186.0, -30.0), False),
+    ("funnel and spool", "#e8c62e", (-40.0, 40.0), (35.0, 130.0), (-180.0, -70.0), False),
+), note="estimated from photos, not measured")
+NO_HEAD = Head("No head shape (line only)")
+HEADS = {h.name: h for h in (NOUVTETE_HEAD, NO_HEAD)}
+DEFAULT_HEAD = NOUVTETE_HEAD
+
+# what the checks and the 3D view use (chosen in the main app: Tools > Robot and head)
+ACTIVE = {"robot": DEFAULT_ROBOT, "head": DEFAULT_HEAD}
+
+
+def set_active(robot_name=None, head_name=None):
+    """Choose the robot and / or the head by name (unknown names are ignored)."""
+    if robot_name in ROBOTS:
+        ACTIVE["robot"] = ROBOTS[robot_name]
+    if head_name in HEADS:
+        ACTIVE["head"] = HEADS[head_name]
+    return ACTIVE["robot"], ACTIVE["head"]
+
+
+def load_choice(path):
+    """The robot and head saved in the settings file (key 'robot_model'), made active."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f).get("robot_model", {})
+        set_active(data.get("robot"), data.get("head"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return ACTIVE["robot"], ACTIVE["head"]
+
+
+def save_choice(path):
+    """Keeps the other entries of the file (theme, transfer folder)."""
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        pass
+    data["robot_model"] = {"robot": ACTIVE["robot"].name, "head": ACTIVE["head"].name}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def box_corners(box):
+    """The 8 corners of a head box, in the tool frame."""
+    _label, _col, xs, ys, zs = box[:5]
+    return [(x, y, z) for x in xs for y in ys for z in zs]
+
+
+BOX_FACES = ((0, 1, 3, 2), (4, 5, 7, 6), (0, 1, 5, 4), (2, 3, 7, 6), (0, 2, 6, 4), (1, 3, 7, 5))
+
+
+def _seg_dist(p, a, b):
+    """Distance from point p to the segment a-b."""
+    d = _sub(b, a)
+    l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+    w = _sub(p, a)
+    t = 0.0 if l2 < 1e-12 else max(0.0, min(1.0, (w[0] * d[0] + w[1] * d[1] + w[2] * d[2]) / l2))
+    q = (w[0] - t * d[0], w[1] - t * d[1], w[2] - t * d[2])
+    return math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2])
 
 
 def _chain(robot, q):
@@ -287,6 +379,8 @@ class Report:
     min_a5: Optional[float] = None
     stretch: float = 0.0                                # largest share of the full arm length used
     start_st: Optional[Tuple[int, int]] = None          # Status / Turn the model finds for the first point
+    head: Optional[Head] = None
+    hits: dict = field(default_factory=dict)            # kind of collision -> (how deep in mm, index of the pose)
     messages: List[str] = field(default_factory=list)   # what to look at (empty = nothing found)
 
     @property
@@ -354,11 +448,59 @@ def program_poses(items, step=10.0, max_poses=MAX_POSES):
     return out
 
 
-def analyse(items, settings, robot=None, step=10.0, max_poses=MAX_POSES):
+BED_SIZE = None              # (x, y) of the bed plate in mm, for 'arm touches the bed' (set by the main app)
+HEAD_CLEAR = 0.5             # mm: a head part this far into the bed is reported
+WRIST_FREE = 130.0           # mm of the forearm next to the wrist that the head may come close to
+
+
+def _collisions(rep, k, robot, head, base_inv, pose_frame, q):
+    """Collision warning for one pose: head parts in the bed, arm in the bed, head against
+    the arm. Records the deepest case of each kind in rep.hits and returns True if any."""
+    hit = False
+
+    def note(kind, depth):
+        if kind not in rep.hits or depth > rep.hits[kind][0]:
+            rep.hits[kind] = (depth, k)
+    pts = joint_points(robot, q)
+    world = frame_mul(frame_inv(base_inv), pose_frame)          # the TCP frame in the robot's world
+    arm = ((pts[0], pts[1], ARM_RADIUS["column"]), (pts[2], pts[3], ARM_RADIUS["upper"]))
+    fore = _sub(pts[5], pts[4])
+    fl = math.sqrt(fore[0] ** 2 + fore[1] ** 2 + fore[2] ** 2)
+    if fl > WRIST_FREE:                                         # the forearm without its end at the wrist
+        f = (fl - WRIST_FREE) / fl
+        arm += ((pts[4], _add(pts[4], (fore[0] * f, fore[1] * f, fore[2] * f)), ARM_RADIUS["forearm"]),)
+    for box in head.boxes:
+        label, touches = box[0], box[5]
+        for corner in box_corners(box):
+            if not touches:
+                z = frame_point(pose_frame, corner)[2]          # height over the bed (base frame)
+                if z < -HEAD_CLEAR:
+                    note("The %s of the head would go %%.1f mm into the bed" % label, -z)
+                    hit = True
+            w = frame_point(world, corner)
+            for a, b, r in arm:
+                d = r - _seg_dist(w, a, b)
+                if d > 0:
+                    note("The %s of the head would touch the robot's own arm (by %%.0f mm)" % label, d)
+                    hit = True
+    if BED_SIZE:                                                # elbow, forearm and wrist against the bed plate
+        for p, r in ((pts[3], ARM_RADIUS["upper"]), (pts[4], ARM_RADIUS["forearm"]), (pts[5], ARM_RADIUS["wrist"])):
+            b = frame_point(base_inv, p)
+            if b[2] < r and -r < b[0] < BED_SIZE[0] + r and -r < b[1] < BED_SIZE[1] + r:
+                note("The robot's arm would touch the bed plate (by %.0f mm)", r - b[2])
+                hit = True
+    return hit
+
+
+def analyse(items, settings, robot=None, step=10.0, max_poses=MAX_POSES, head=None):
     """Put a program on the robot: `settings` gives the BASE and TOOL frames the program uses
-    (krl_export.ExportSettings). Returns a Report."""
-    robot = robot or DEFAULT_ROBOT
+    (krl_export.ExportSettings). robot / head: default = the active ones (set_active).
+    Returns a Report."""
+    robot = robot or ACTIVE["robot"]
+    head = head or ACTIVE["head"]
     rep = Report(robot)
+    rep.head = head
+    base_inv = frame_inv(frame(*settings.base))
     base = frame(*settings.base)
     tool_inv = frame_inv(frame(*settings.tool))
     full = robot.upper_arm + math.hypot(robot.forearm, robot.elbow)
@@ -366,7 +508,8 @@ def analyse(items, settings, robot=None, step=10.0, max_poses=MAX_POSES):
     lows, highs = [None] * 6, [None] * 6
     near_axis1 = False
     for ps in program_poses(items, step, max_poses):
-        tcp = frame_mul(base, frame(*(ps['xyz'] + ps['abc'])))
+        pose_frame = frame(*(ps['xyz'] + ps['abc']))
+        tcp = frame_mul(base, pose_frame)
         fl = frame_mul(tcp, tool_inv)
         sols = inverse(robot, fl)
         if ps['ptp'] or prev is None:
@@ -392,6 +535,8 @@ def analyse(items, settings, robot=None, step=10.0, max_poses=MAX_POSES):
         w = _sub(pts[5], pts[2])
         rep.stretch = max(rep.stretch, math.sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) / full)
         near_axis1 = near_axis1 or math.hypot(pts[5][0], pts[5][1]) < OVERHEAD_WARN
+        if head.boxes or BED_SIZE:
+            entry['hit'] = _collisions(rep, len(rep.poses) - 1, robot, head, base_inv, pose_frame, q)
     if lows[0] is not None:
         rep.ranges = list(zip(lows, highs))
         for k in range(6):
@@ -423,6 +568,17 @@ def analyse(items, settings, robot=None, step=10.0, max_poses=MAX_POSES):
     if not rep.unreachable and rep.stretch > STRETCH_WARN:
         msgs.append("The arm is stretched to %.0f %% of its length: this is the edge of the reach, where the "
                     "robot moves badly. Suggestion: move the part nearer to the robot." % (100.0 * rep.stretch))
+    for text, (depth, k) in sorted(rep.hits.items()):
+        p = rep.poses[k]['xyz']
+        extra = ""
+        if "into the bed" in text:
+            extra = " Suggestion: less tilt (B / Tilt), or a higher Start Z."
+        elif "own arm" in text:
+            extra = " Suggestion: move the part further from the robot foot, or turn it."
+        msgs.append((text % depth) + " at X %.0f, Y %.0f, Z %.0f (the head shape is %s).%s"
+                    % (p[0], p[1], p[2], head.note or "a simple model", extra)
+                    if "head" in text else (text % depth) + " at X %.0f, Y %.0f, Z %.0f. Suggestion: move the part "
+                    "nearer to the middle of the bed, or raise it." % (p[0], p[1], p[2]))
     return rep
 
 

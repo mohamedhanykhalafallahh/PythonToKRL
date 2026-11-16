@@ -72,9 +72,11 @@ SHAPE_FIELDS = {
         ("corner_radius", "Corner Radius (mm, blank = keep corners):", ""),
         ("outline", "Outline number:", "1"),
         ("smoothing", "Smoothing (mm, blank = auto):", ""),
+        ("seam", "Start point X Y (mm, blank = automatic):", ""),
     ],
 }
-IMPORT_BLANK_OK = ("corner_radius", "smoothing")       # import fields that may stay empty
+TOP_VIEW_HINT = "wheel: zoom  \u00b7  drag: move  \u00b7  click: find the line  \u00b7  double-click: fit"
+IMPORT_BLANK_OK = ("corner_radius", "smoothing", "seam")       # import fields that may stay empty
 FIELD_NAMES = {"step": "Turn step E", "layer_height": "Layer height", "turns": "Turns per layer", "layers": "Layers",
                "a": "A", "b": "B / Tilt", "c": "C", "xc": "Centre X", "yc": "Centre Y", "z0": "Start Z",
                "length": "Length X", "width": "Width Y", "corner_radius": "Corner radius",
@@ -84,6 +86,7 @@ FIELD_NAMES = {"step": "Turn step E", "layer_height": "Layer height", "turns": "
 # The bed plate in the calibrated base (BASE_DATA[1]: origin = lower-left corner, Z 0 = first contact)
 BED_X, BED_Y = 300.0, 455.0
 view3d.BED = (BED_X, BED_Y)                         # drawn under the robot in the 3D view
+robot_model.BED_SIZE = (BED_X, BED_Y)               # for the 'arm touches the bed' warning
 Z_LOW_WARN = -5.0            # mm: a path lower than this is reported (a pressed first layer is about -2.5)
 MIN_RADIUS_WARN = 20.0       # mm: smallest arc the head is known to follow well
 CORNER_WARN = 5.0            # deg: a corner sharper than this is reported
@@ -279,6 +282,8 @@ HELP_SHAPES = {
         "  one pass per layer; Turns is not used for it.\n"
         "- Fill the shape: inward turns until the shape is full (down to a core about 40 mm wide).\n"
         "  Holes are not filled around: the fiber is never cut.\n"
+        "- Right-click in the top view: start every loop at that point (the slide to the next turn\n"
+        "  and the climb to the next layer happen there), or choose which outline of the file to print.\n"
         "- STL: a 3D model. It is cut at every layer height, so each layer follows the model.\n"
         "  Layers is set to the model's height when the file is chosen.\n"
         "- STEP files cannot be read: export STL (3D) or DXF (2D) from the CAD program.\n"
@@ -389,6 +394,9 @@ class MainApp:
         self.undo_stack, self.redo_stack = [], []
         self.view = None                 # top view transform (s, tx, ty); None = fit on next draw
         self.theme = ui_theme.load_theme()
+        robot, head = robot_model.load_choice(ui_theme._path())      # per PC, like the theme
+        self.robot_name_var = tk.StringVar(value=robot.name)
+        self.head_name_var = tk.StringVar(value=head.name)
         self.theme_var = tk.StringVar(value=self.theme)
         self.P = ui_theme.apply(root, self.theme)
         ui_theme.window_icon(root)
@@ -431,6 +439,13 @@ class MainApp:
         t.add_separator()
         t.add_command(label="Export Settings (TOOL/BASE profiles)...", command=self.open_export_settings)
         t.add_command(label="Robot Connection (transfer folder)...", command=self.open_robot_connection)
+        rb = tk.Menu(t, tearoff=False)                   # which arm and head the checks and the 3D view use
+        for name in robot_model.ROBOTS:
+            rb.add_radiobutton(label=name, value=name, variable=self.robot_name_var, command=self.choose_robot)
+        rb.add_separator()
+        for name in robot_model.HEADS:
+            rb.add_radiobutton(label=name, value=name, variable=self.head_name_var, command=self.choose_robot)
+        t.add_cascade(label="Robot and head (for the checks and the 3D view)", menu=rb)
         t.add_separator()
         t.add_command(label="Manual 11-point editor (advanced)...", command=self.open_manual_editor)
         m.add_cascade(label="Tools", menu=t)
@@ -556,8 +571,8 @@ class MainApp:
         head = ttk.Frame(tv, style="In.TFrame")
         head.pack(fill=tk.X)
         ttk.Label(head, text="Top view", style="Title.TLabel").pack(side=tk.LEFT)
-        ttk.Label(head, text="wheel: zoom  \u00b7  drag: move  \u00b7  click: find the line  \u00b7  double-click: fit",
-                  style="Muted.TLabel").pack(side=tk.RIGHT)
+        self.view_hint = ttk.Label(head, style="Muted.TLabel", text=TOP_VIEW_HINT)
+        self.view_hint.pack(side=tk.RIGHT)
         self.canvas = tk.Canvas(tv, width=600, height=330, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
         c = self.canvas
@@ -566,6 +581,7 @@ class MainApp:
         c.bind("<B1-Motion>", self._drag)
         c.bind("<ButtonRelease-1>", self._release)
         c.bind("<Double-Button-1>", lambda e: self.fit_view())
+        c.bind("<Button-3>", self._canvas_menu)          # Import: start point here, choose the outline
         c.bind("<Configure>", lambda e: self.redraw())
         self.legend = ttk.Frame(tv, style="In.TFrame")
         self.legend.pack(fill=tk.X)
@@ -617,7 +633,7 @@ class MainApp:
             self.shape_title.config(text="Design file  \u00b7  printed as drawn, size 1 : 1")
             rows = ((("xc", "Centre X"), ("yc", "Centre Y"), ("z0", "Start Z")),)
             more = ((("scale", "Scale"), ("rotation", "Rotation"), ("corner_radius", "Corner rad.")),
-                    (("outline", "Outline no."), ("smoothing", "Smoothing")))
+                    (("outline", "Outline no."), ("smoothing", "Smoothing"), ("seam", "Start X Y")))
         if shape == "import":           # file row: button + file name and what was found in it (2 lines)
             bar = ttk.Frame(f, style="In.TFrame")
             bar.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(0, 3))
@@ -646,6 +662,9 @@ class MainApp:
             self.shape_hint = ttk.Label(f, text="", style="Muted.TLabel")
             self.shape_hint.grid(row=len(rows) + 1, column=0, columnspan=4, sticky="w", pady=(2, 0))
         self._update_shape_hint()
+        if getattr(self, "view_hint", None) is not None:
+            self.view_hint.config(text=TOP_VIEW_HINT + ("  \u00b7  right-click: start point, outline"
+                                                        if shape == "import" else ""))
         for check, wanted in ((self.helix_check, "cylinder"), (self.inward_check, "import")):
             if shape == wanted:
                 check.grid()
@@ -810,6 +829,8 @@ class MainApp:
             for k, v in inputs.get(s, {}).items():
                 if k in fs:
                     fs[k].set(str(v))
+        if "import" in inputs and "seam" not in inputs["import"]:
+            self.shape_vars["import"]["seam"].set("")    # a project from before the start point existed
         opts = st.get("options", {})
         self.auto_orient_var.set(bool(opts.get("auto_orient", True)))
         self.helix_var.set(bool(opts.get("helix", False)))
@@ -820,7 +841,7 @@ class MainApp:
         imp = inputs.get("import", {})                  # non-standard extra settings: show them
         self.more_var.set(any(str(imp.get(k, d)).strip() not in (d, d + ".0") for k, d in
                               (("scale", "1"), ("rotation", "0"), ("corner_radius", ""), ("outline", "1"),
-                               ("smoothing", ""))))
+                               ("smoothing", ""), ("seam", ""))))
         self.approach_var.set(bool(opts.get("approach", False)))      # older projects: no approach moves
         self.lift_var.set(str(opts.get("lift", DEFAULT_LIFT)))
         self.set_shape(shape)
@@ -871,6 +892,11 @@ class MainApp:
                 text = fs[k].get().strip()
                 if k == "file":
                     vals[k] = text
+                elif k == "seam":                        # two numbers: where every loop starts
+                    parts = text.replace(";", " ").split()
+                    if len(parts) not in (0, 2):
+                        raise _BadField("Start point (two numbers, X and Y, with a space between)")
+                    vals[k] = tuple(to_number(q, "Start point") for q in parts) or None
                 elif not text and (k == "corner_radius" or (shape == "import" and k in IMPORT_BLANK_OK)):
                     vals[k] = None
                 else:
@@ -902,7 +928,7 @@ class MainApp:
                                            outline=int(vals["outline"]), corner_radius=vals["corner_radius"],
                                            smoothing=vals["smoothing"], turns=turns, layers=layers,
                                            auto_orient=self.auto_orient_var.get(), inward=self.inward_var.get(),
-                                           fill=self.fill_var.get(),
+                                           fill=self.fill_var.get(), seam=vals["seam"],
                                            **common)
         return cylinder.CylinderParams(xc=vals["xc"], yc=vals["yc"], z0=vals["z0"],
                                        inner_diameter=vals["inner_diameter"], turns=turns, layers=layers,
@@ -949,7 +975,7 @@ class MainApp:
         fs = self.shape_vars["import"]
         fs["file"].set(path)
         for k, value in (("scale", "1"), ("rotation", "0"), ("corner_radius", ""), ("outline", "1"),
-                         ("smoothing", "")):
+                         ("smoothing", ""), ("seam", "")):
             fs[k].set(value)                             # a new file starts as drawn, 1 : 1
         self.more_var.set(False)
         if design.kind == "3d":                          # the whole model: as many layers as it is high
@@ -1091,13 +1117,28 @@ class MainApp:
         self.checks_chip.pack(side=tk.LEFT, padx=(0, 6))
         self.checks_chip.bind("<Button-1>", lambda e: self.show_checks())
 
+    def choose_robot(self, save=True):
+        """Tools > Robot and head: the arm and the head shape used by the checks and the 3D view.
+        It changes nothing in the program that is written."""
+        robot_model.set_active(self.robot_name_var.get(), self.head_name_var.get())
+        if save:
+            try:
+                robot_model.save_choice(ui_theme._path())
+            except OSError:
+                pass
+        self._update_info()
+        view = view3d._open_views.get(self.root)
+        if view is not None and view.win.winfo_exists():
+            view.reload()
+
     def robot_report(self, items=None, settings=None):
         """The program on the robot model (robot_model.analyse): reach, axis limits, singularities.
         Kept until the text or the TOOL / BASE change. None if it cannot be worked out."""
         if items is None:
             items = pm.parse_krl(self.body_text())
         settings = settings or krl_export.active_settings()[0]
-        key = (self.body_text(), tuple(settings.base), tuple(settings.tool))
+        key = (self.body_text(), tuple(settings.base), tuple(settings.tool),
+               robot_model.ACTIVE["robot"].name, robot_model.ACTIVE["head"].name)
         cached = getattr(self, "_robot_cache", None)
         if cached and cached[0] == key:
             return cached[1]
@@ -1122,7 +1163,8 @@ class MainApp:
             messagebox.showinfo("Checks before printing",
                                 "Nothing found: the path is on the bed (%g x %g mm), arcs are %g mm or wider, "
                                 "no sharp corners, and the head follows the travel direction.\n\n"
-                                "%s\n\nNot checked: the speed, and collisions of the head or the arm."
+                                "%s\n\nNot checked: the speed. The collision warning only knows the head's "
+                                "simple shape, the arm and the bed plate, nothing else around the robot."
                                 % (BED_X, BED_Y, MIN_RADIUS_WARN, self._robot_ok_text()))
 
     def _robot_ok_text(self):
@@ -1133,8 +1175,116 @@ class MainApp:
         turns = (" (axis 6 is counted as endless: it turns %.1f times)"
                  % ((rep.ranges[5][1] - rep.ranges[5][0]) / 360.0)) if r.a6_endless else ""
         return ("Robot model (%s, from the data sheet): every point is within reach (arm stretched to "
-                "%.0f %% at most), all axes stay inside their limits%s, axis 5 stays %.0f deg away from 0.\n%s"
-                % (r.name, 100.0 * rep.stretch, turns, rep.min_a5, rep.summary()))
+                "%.0f %% at most), all axes stay inside their limits%s, axis 5 stays %.0f deg away from 0, "
+                "and the head (%s) touches neither the bed nor the arm.\n%s"
+                % (r.name, 100.0 * rep.stretch, turns, rep.min_a5, rep.head.name, rep.summary()))
+
+    # ---------- Import: start point and outline chosen by clicking ----------
+    def _canvas_menu(self, e):
+        """Right-click in the top view (Import only): start the loops here, or choose the outline."""
+        if self.shape_var.get() != "import" or self.view is None:
+            return
+        s, tx, ty = self.view
+        x, y = (e.x - tx) / s, (ty - e.y) / s
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label="Start every loop here (X %.0f, Y %.0f)" % (x, y),
+                         command=lambda: self.set_start_point(x, y))
+        if self.shape_vars["import"]["seam"].get().strip():
+            menu.add_command(label="Start point: automatic again", command=lambda: self.set_start_point(None))
+        d = self._design[2] if self._design else None
+        if d is not None and d.kind == "2d" and len(d.paths) > 1:
+            menu.add_separator()
+            menu.add_command(label="Choose the outline (%d in this file)..." % len(d.paths),
+                             command=self.open_outline_chooser)
+        menu.tk_popup(e.x_root, e.y_root)
+
+    def set_start_point(self, x, y=None):
+        """Import: every loop starts at the outline's point nearest to (x, y) on the bed, so the
+        slide to the next turn and the climb to the next layer happen there. None = automatic.
+        Generates again; returns True if that worked."""
+        var = self.shape_vars["import"]["seam"]
+        before = var.get()
+        var.set("" if x is None else "%s %s" % (pm.fmt(round(x, 1)), pm.fmt(round(y, 1))))
+        if var.get():
+            self.more_var.set(True)                      # show the field that now holds the point
+            self._show_shape_fields()
+        if self.generate():
+            return True
+        var.set(before)
+        return False
+
+    def choose_outline(self, number):
+        """Import: print outline `number` of the file (1 = the largest). Generates again."""
+        fs = self.shape_vars["import"]
+        before = (fs["outline"].get(), fs["seam"].get())
+        fs["outline"].set(str(int(number)))
+        fs["seam"].set("")                               # the start point belonged to the other outline
+        if int(number) != 1:
+            self.more_var.set(True)
+            self._show_shape_fields()
+        if self.generate():
+            return True
+        fs["outline"].set(before[0])
+        fs["seam"].set(before[1])
+        return False
+
+    def open_outline_chooser(self):
+        """A picture of every outline and path in the design file: click one to print it."""
+        d = self._design[2] if self._design else None
+        if d is None or d.kind != "2d" or not d.paths:
+            return None
+        P = self.P
+        win = tk.Toplevel(self.root)
+        win.title("Choose the outline to print")
+        win.transient(self.root)
+        win.configure(bg=P["bg"])
+        tk.Label(win, bg=P["bg"], fg=P["text"], font=(ui_theme.UI_FONT, ui_theme.UI_SIZE), justify=tk.LEFT,
+                 text="%s: click the outline to print. One outline is printed per program (the fiber is "
+                      "never cut).\nDashed = open or self-crossing: followed as drawn, one pass per layer."
+                      % d.name).pack(anchor="w", padx=12, pady=(10, 6))
+        W, H = 620, 440
+        cv = tk.Canvas(win, width=W, height=H, bg=P["canvas"], highlightthickness=0, cursor="hand2")
+        cv.pack(padx=12, pady=(0, 12))
+        b = d.bounds
+        s = 0.86 * min(W / max(b[2] - b[0], 1e-6), H / max(b[3] - b[1], 1e-6))
+        cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+        scr = lambda q: (W / 2.0 + (q[0] - cx) * s, H / 2.0 - (q[1] - cy) * s)
+        try:
+            current = int(float(self.shape_vars["import"]["outline"].get()))
+        except ValueError:
+            current = 1
+        shapes_on_screen = []
+        for n, (kind, pts) in enumerate(d.paths, 1):
+            flat = [v for q in (pts + [pts[0]] if kind != "open" else pts) for v in scr(q)]
+            cv.create_line(*flat, fill=P["accent"] if n == current else P["muted"], width=3 if n == current else 2,
+                           dash=() if kind == "outline" else (5, 3))
+            top = max(pts, key=lambda q: (q[1], -q[0]))
+            x, y = scr(top)
+            cv.create_text(x, y - 9, text=str(n), fill=P["text"], font=(ui_theme.UI_FONT, ui_theme.UI_SIZE, "bold"))
+            shapes_on_screen.append((n, flat))
+
+        def nearest(ex, ey):
+            best = None
+            for n, flat in shapes_on_screen:
+                for k in range(0, len(flat) - 2, 2):
+                    ax, ay, bx, by = flat[k:k + 4]
+                    dx, dy = bx - ax, by - ay
+                    l2 = dx * dx + dy * dy
+                    t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((ex - ax) * dx + (ey - ay) * dy) / l2))
+                    dist = math.hypot(ex - ax - t * dx, ey - ay - t * dy)
+                    if best is None or dist < best[0]:
+                        best = (dist, n)
+            return best[1] if best and best[0] <= 12 else None
+
+        def clicked(e):
+            n = nearest(e.x, e.y)
+            if n is not None:
+                win.destroy()
+                self.choose_outline(n)
+        cv.bind("<Button-1>", clicked)
+        ui_theme.title_bar(win, self.theme_var.get() == "dark")
+        win.outline_at = nearest                         # (for the tests)
+        return win
 
     def round_corners_now(self):
         """The one-click fix for sharp corners / tight arcs of an imported design: set the largest

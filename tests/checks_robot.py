@@ -6,6 +6,7 @@
 Each check returns a list of problems (empty = ok).
 """
 import dataclasses
+import math
 import random
 import tkinter as tk
 
@@ -234,5 +235,113 @@ def check_robot_view(new_main_app):
             bad.append("light picture: %d arrows" % len(view.canvas.find_withtag("head_arrow")))
         view.win.destroy()
     finally:
+        root.destroy()
+    return bad
+
+
+def check_head_and_picking(new_main_app):
+    """Robot / head choice, the collision warning, and the Import start point / outline by clicking."""
+    import checks_import
+    import ui_theme
+    bad = []
+    S = krl_export.NOUVTETE
+    was_bed = rm.BED_SIZE
+    rm.BED_SIZE = (300.0, 455.0)
+    try:
+        # the head's simple shape: fine as calibrated, the UV lamp digs in with a strong tilt
+        if rm.analyse(_cuboid(), S).hits:
+            bad.append("default cuboid: no collision expected (%s)" % rm.analyse(_cuboid(), S).messages)
+        steep = rm.analyse(_cuboid(b=-20.0), S)
+        if not any("UV lamp" in m and "into the bed" in m and "Suggestion" in m for m in steep.messages) \
+                or not any(p.get('hit') for p in steep.poses):
+            bad.append("tilt -20: the UV lamp in the bed must be reported (%s)" % steep.messages)
+        if rm.analyse(_cuboid(b=-20.0), S, head=rm.NO_HEAD).hits:
+            bad.append("without a head shape nothing of the head can be reported")
+        block = rm.Head("test", (("block", "#000000", (-20, 20), (-20, 20), (-5, 15), False),))
+        if not rm.analyse(_cuboid()[:40], S, head=block).hits:
+            bad.append("a head part 15 mm below the roller must be reported")
+        # a pressed first layer (Start Z below 0) is what the roller is for: not a collision
+        low = cuboid.generate(cuboid.CuboidParams(xc=150, yc=225, z0=-2, length=150, width=300, corner_radius=None,
+                                                  step=2, layer_height=2, turns=2, layers=1, a=180, b=-3, c=180,
+                                                  auto_orient=True))[0]
+        if rm.analyse(low, S).hits:
+            bad.append("a pressed roller (Z -2) must not count as a collision")
+        if len(rm.box_corners(rm.NOUVTETE_HEAD.boxes[0])) != 8 or "KR 10 R900 sixx" not in rm.ROBOTS:
+            bad.append("head box corners / robot list")
+    finally:
+        rm.BED_SIZE = was_bed
+
+    msgs = checks_import._quiet()
+    root, app = new_main_app()
+    try:
+        # Tools > Robot and head: used by the checks, kept for the next start
+        app.generate()
+        app.robot_name_var.set("KR 6 R700 sixx")
+        app.choose_robot()
+        if not any("Axis 6" in w for w in app.warnings):
+            bad.append("another robot (no endless axis 6) must change the checks (%s)" % app.warnings)
+        if rm.load_choice(ui_theme._path())[0].name != "KR 6 R700 sixx":
+            bad.append("the robot choice must be saved")
+        app.robot_name_var.set(rm.DEFAULT_ROBOT.name)
+        app.head_name_var.set(rm.NO_HEAD.name)
+        app.choose_robot()
+        if app.warnings or app.robot_report().head is not rm.NO_HEAD:
+            bad.append("back to the default robot, no head: %s" % app.warnings)
+        app.head_name_var.set(rm.DEFAULT_HEAD.name)
+        app.choose_robot()
+
+        # Import: the start point by clicking
+        if not app.import_design(checks_import.design("corners_px.svg")):
+            return bad + ["corners_px.svg could not be imported"]
+        first = app.state()["output"]
+        start0 = pm.path_3d(pm.parse_krl(first))[0]
+        d = app._design[2]
+        if len(d.paths) < 2:
+            bad.append("the test drawing should hold several outlines")
+        target = (start0[0] - 30.0, start0[1] + 25.0)
+        if not app.set_start_point(*target) or app.state()["output"] == first:
+            bad.append("set_start_point should give another program")
+        start1 = pm.path_3d(pm.parse_krl(app.state()["output"]))[0]
+        moved = math.hypot(start1[0] - start0[0], start1[1] - start0[1])
+        if moved < 5 or math.hypot(start1[0] - target[0], start1[1] - target[1]) > 45:
+            bad.append("the loop should start near the clicked point (start %s, clicked %s)" % (start1[:2], target))
+        if not app.shape_vars["import"]["seam"].get() or not app.more_var.get():
+            bad.append("the start point should show in its field under More settings")
+        st = app.state()
+        if not app.set_start_point(None) or app.state()["output"] != first:
+            bad.append("automatic start point should give the first program again")
+        app.set_state(st)                                # a project keeps the start point
+        if not app.generate() or app.state()["output"] != st["output"]:
+            bad.append("a saved start point must give the same program again")
+        old = {k: v for k, v in st["inputs"]["import"].items() if k != "seam"}
+        app.set_state(dict(st, inputs=dict(st["inputs"], **{"import": old})))
+        if app.shape_vars["import"]["seam"].get():
+            bad.append("a project without a start point must not keep the one typed before")
+        app.shape_vars["import"]["seam"].set("12")
+        del msgs[:]
+        if app.generate() or not msgs or "Start point" not in msgs[-1][1]:
+            bad.append("half a start point must be refused with a message (%s)" % msgs[-1:])
+        app.shape_vars["import"]["seam"].set("")
+
+        # Import: the outline by clicking
+        app.generate()
+        win = app.open_outline_chooser()
+        if win is None or not hasattr(win, "outline_at"):
+            bad.append("the outline chooser did not open")
+        else:
+            if win.outline_at(-500, -500) is not None:
+                bad.append("a click far from every outline must choose nothing")
+            win.destroy()
+        if not app.choose_outline(2) or app.shape_vars["import"]["outline"].get() != "2" \
+                or app.state()["output"] == first:
+            bad.append("choose_outline(2) should print the second outline")
+        if not app.choose_outline(1) or app.state()["output"] != first:
+            bad.append("choose_outline(1) should give the first program again")
+    finally:
+        rm.set_active(rm.DEFAULT_ROBOT.name, rm.DEFAULT_HEAD.name)
+        try:
+            rm.save_choice(ui_theme._path())             # the checks after this one start with the defaults
+        except OSError:
+            pass
         root.destroy()
     return bad
